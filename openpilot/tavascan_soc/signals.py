@@ -17,11 +17,14 @@ def _bits(data: bytes, start: int, length: int) -> int:
   return (int.from_bytes(data, "little") >> start) & ((1 << length) - 1)
 
 
-# Numeriske signaler: navn -> (adresse, startbit, antal bit, skala, maks_gyldig_raa)
+# navn -> (adresse, startbit, antal bit, skala, min_gyldig_raa, maks_gyldig_raa)
+# Klimaeffekt har min 0: nul watt betyder "klima slukket" og er en gyldig
+# aflaesning. Energi og kilometerstand har min 1, da nul dér er usandsynligt
+# og i praksis betyder at signalet ikke er udfyldt endnu.
 NUMERIC = {
-  "energy_raw":   (ADDR_HVEM_02, 32, 11, 1.0, 2040),
-  "climate_w":    (ADDR_HVEM_02, 24, 8, 50.0, 254),
-  "odometer_km":  (ADDR_DIAGNOSE_01, 8, 20, 1.0, 1048570),
+  "energy_raw":   (ADDR_HVEM_02, 32, 11, 1.0, 1, 2040),
+  "climate_w":    (ADDR_HVEM_02, 24, 8, 50.0, 0, 254),
+  "odometer_km":  (ADDR_DIAGNOSE_01, 8, 20, 1.0, 1, 1048570),
 }
 
 # Bit-signaler: navn -> (adresse, bit)
@@ -50,9 +53,9 @@ def decode(frames: dict[int, list[bytes]]) -> dict:
   """
   out: dict = {}
 
-  for name, (addr, start, length, scale, max_valid) in NUMERIC.items():
+  for name, (addr, start, length, scale, min_valid, max_valid) in NUMERIC.items():
     vals = [_bits(d, start, length) for d in frames.get(addr, [])]
-    vals = [v for v in vals if 0 < v <= max_valid]
+    vals = [v for v in vals if min_valid <= v <= max_valid]
     if vals:
       vals.sort()
       out[name] = vals[len(vals) // 2] * scale
