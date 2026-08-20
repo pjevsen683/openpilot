@@ -26,7 +26,10 @@ NUMERIC = {
 
 # Bit-signaler: navn -> (adresse, bit)
 BOOLEAN = {
-  "locked":       (ADDR_ZV_02, 17),   # ZV_verriegelt_extern_ist
+  # ZV_verriegelt_extern_ist. Verificeret i BEGGE retninger 20/8: app-oplaasning
+  # gav 1->0, bilens auto-genlaasning 45 s senere gav 0->1. To skift i 1602
+  # beskeder, ingen falske udslag.
+  "locked":       (ADDR_ZV_02, 17),
   "door_driver":  (ADDR_ZV_02, 24),
   "door_pass":    (ADDR_ZV_02, 25),
   "door_rear_l":  (ADDR_ZV_02, 26),
