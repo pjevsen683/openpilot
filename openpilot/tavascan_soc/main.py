@@ -35,9 +35,14 @@ INTERVAL_S = float(os.getenv("TAVASCAN_INTERVAL", "60"))
 SAMPLE_S = float(os.getenv("TAVASCAN_SAMPLE_S", "6"))
 
 # SoC kalibreres lineaert mod bilens eget display: soc_pct = SOC_A * raw + SOC_B.
-# Punkterne: raw 483 -> ~40 % (upraecist aflaest), raw 785 -> 57 % (praecist).
-# PROVISORISK: to punkter definerer altid en linje. Et tredje punkt over 80 %
-# eller under 25 % vil vise om offsettet paa +12,8 % er reelt.
+# Maalepunkter: raw 483 -> ~40 % (skoennet), 699 -> 53 %, 785 -> 57 % (begge
+# praecist aflaest). Offsettet paa +12,8 % er BEKRAEFTET reelt: forholdene i raa
+# vaerdi (1,447 og 1,123) matcher ikke forholdene i SoC (1,325 og 1,075), hvilket
+# de skulle hvis SoC blot var energi/kapacitet. Der er en reserve under nul.
+# Modellen rammer alle tre punkter inden for displayets afrunding.
+# ÅBENT: alle punkter ligger mellem 40 og 57 %. Ekstrapolationen over 80 % og
+# under 25 % er utestet — derfor udstilles ogsaa den raa vaerdi som egen sensor,
+# saa den kan logges og fittes over et bredere omraade.
 SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.056291"))
 SOC_B = float(os.getenv("TAVASCAN_SOC_B", "12.81"))
 
@@ -56,6 +61,11 @@ DEVICE = {
 # key, navn, enhed, device_class, felt i state, state_class
 SENSORS = [
   ("soc", "Tavascan SoC", "%", "battery", "soc_pct", "measurement"),
+  # Ukalibreret raa taellervaerdi fra HVEM_02. Eksponeret med vilje, saa den kan
+  # logges i HA's langtidsstatistik og sammenholdes med bilens eget display over
+  # et bredt SoC-omraade. Kalibreringen nedenfor bygger indtil videre kun paa
+  # punkter mellem 40 og 57 %.
+  ("raw", "Tavascan SoC raa", None, None, "raw", "measurement"),
   ("odometer", "Tavascan Kilometerstand", "km", "distance", "odometer_km", "total_increasing"),
   ("climate_power", "Tavascan Klimaeffekt", "W", "power", "climate_w", "measurement"),
   ("volt12", "Tavascan 12V batteri", "V", "voltage", "volt12", "measurement"),
@@ -78,11 +88,13 @@ def discovery_messages() -> list[tuple[str, str]]:
       "unique_id": f"{DEV_ID}_{key}",
       "state_topic": STATE_TOPIC,
       "availability_topic": AVAIL_TOPIC,
-      "unit_of_measurement": unit,
-      "device_class": dclass,
       "value_template": "{{ value_json.%s }}" % field,
       "device": DEVICE,
     }
+    if unit:
+      cfg["unit_of_measurement"] = unit
+    if dclass:
+      cfg["device_class"] = dclass
     if sclass:
       cfg["state_class"] = sclass
     msgs.append((f"homeassistant/sensor/{DEV_ID}_{key}/config", json.dumps(cfg)))
