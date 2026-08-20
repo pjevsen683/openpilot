@@ -10,10 +10,13 @@ opladning, under kørsel, og ca. 15 min efter parkering. Sidste kendte værdi
 bevares derfor, og en age-sensor viser hvor gammel den er.
 
 Signalet er HVEM_02 (0x5AC) / HVEM_Nutzbare_Energie: bit 32, 11 bit,
-little endian. DBC'ens skala på 50 Wh passer IKKE på denne bil — målinger mod
-ladeeffekt og bilens eget display peger begge på 62,5 Wh (= 1/16 kWh).
-Se BATTERI-SOC-NOTER.md. Justér med TAVASCAN_WH_PER_COUNT hvis kalibreringen
-viser noget andet.
+little endian.
+
+energy_kwh er kun vejledende. Forholdet mellem den rå værdi og bilens viste
+SoC er IKKE proportionalt, så hverken DBC'ens 50 Wh eller de 62,5 Wh vi først
+gættede på giver en troværdig kapacitet (68,9 hhv. 86,1 kWh mod bilens 77).
+SoC beregnes derfor af en lineær kalibrering mod displayet, se SOC_A/SOC_B.
+Se BATTERI-SOC-NOTER.md.
 """
 import json
 import os
@@ -30,6 +33,15 @@ INTERVAL_S = float(os.getenv("TAVASCAN_INTERVAL", "60"))
 SAMPLE_S = float(os.getenv("TAVASCAN_SAMPLE_S", "6"))
 WH_PER_COUNT = float(os.getenv("TAVASCAN_WH_PER_COUNT", "62.5"))
 BATTERY_KWH = float(os.getenv("TAVASCAN_BATTERY_KWH", "77"))
+
+# SoC kalibreres lineaert mod bilens eget display: soc_pct = SOC_A * raw + SOC_B.
+# En ren proportional model (energi/kapacitet) passer IKKE - to maalepunkter mod
+# displayet gav forholdet 1.625 i raa vaerdi men kun 1.425 i SoC.
+# Punkterne: raw 483 -> ~40 % (upraecist aflaest), raw 785 -> 57 % (praecist).
+# PROVISORISK: to punkter definerer altid en linje. Et tredje punkt ved en meget
+# anden ladetilstand (over 80 % eller under 25 %) vil vise om offsettet er reelt.
+SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.056291"))
+SOC_B = float(os.getenv("TAVASCAN_SOC_B", "12.81"))
 
 ENERGY_ADDR = 0x5AC          # HVEM_02
 RAW_INVALID_MIN = 2040       # 2046/2047 ses som ugyldige udfald
@@ -130,7 +142,7 @@ def main() -> None:
       "awake": awake,
       "raw": last_raw,
       "energy_kwh": energy_kwh,
-      "soc_pct": round(energy_kwh / BATTERY_KWH * 100.0, 1) if energy_kwh else None,
+      "soc_pct": round(min(100.0, max(0.0, SOC_A * last_raw + SOC_B)), 1) if last_raw else None,
       "age_s": int(time.time() - last_ts) if last_ts else None,
       "fresh": raw is not None,
     }
