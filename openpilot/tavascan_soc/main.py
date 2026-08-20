@@ -5,9 +5,12 @@ Kører på comma-enheden og SENDER data ud. Der er bevidst ingen vej ind i
 enheden: ingen SSH, ingen lyttende port, ingen credentials — brokeren er
 anonym.
 
-Bilens CAN-bus sover når den holder parkeret. Der er kun friske data under
-opladning, under kørsel, og ca. 15 min efter parkering. Sidste kendte værdi
-bevares derfor, og en age-sensor viser hvor gammel den er.
+Processen kører KUN offroad (only_offroad), så den ikke belaster enheden
+under kørsel. Det koster ingenting: alle vinduer hvor bussen er vågen og
+SoC ændrer sig — opladning og de ~15 min efter parkering — er offroad.
+
+Bilens CAN-bus sover når den holder parkeret. Sidste kendte værdi bevares
+derfor, og en age-sensor viser hvor gammel den er.
 
 Signalet er HVEM_02 (0x5AC) / HVEM_Nutzbare_Energie: bit 32, 11 bit,
 little endian.
