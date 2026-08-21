@@ -35,16 +35,18 @@ INTERVAL_S = float(os.getenv("TAVASCAN_INTERVAL", "60"))
 SAMPLE_S = float(os.getenv("TAVASCAN_SAMPLE_S", "6"))
 
 # SoC kalibreres lineaert mod bilens eget display: soc_pct = SOC_A * raw + SOC_B.
-# Maalepunkter: raw 483 -> ~40 % (skoennet), 699 -> 53 %, 785 -> 57 % (begge
-# praecist aflaest). Offsettet paa +12,8 % er BEKRAEFTET reelt: forholdene i raa
-# vaerdi (1,447 og 1,123) matcher ikke forholdene i SoC (1,325 og 1,075), hvilket
-# de skulle hvis SoC blot var energi/kapacitet. Der er en reserve under nul.
-# Modellen rammer alle tre punkter inden for displayets afrunding.
+# Fittet paa tre PRAECISE aflaesninger af bilens display:
+#   raw 493 -> 40 %, raw 699 -> 53 %, raw 785 -> 57 %
+# Et fjerde, skoennet punkt (raw 483 -> ~40 %) indgaar ikke i fittet, men
+# bekraefter det: 483 og 493 gav begge 40 %, saa skoennet var retvisende.
+# Offsettet paa ca. +11 % er reelt, ikke et artefakt: forholdene i raa vaerdi
+# matcher ikke forholdene i SoC, hvilket de skulle hvis SoC blot var
+# energi/kapacitet. Der er en reserve under displayets nul.
 # ÅBENT: alle punkter ligger mellem 40 og 57 %. Ekstrapolationen over 80 % og
 # under 25 % er utestet — derfor udstilles ogsaa den raa vaerdi som egen sensor,
 # saa den kan logges og fittes over et bredere omraade.
-SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.056291"))
-SOC_B = float(os.getenv("TAVASCAN_SOC_B", "12.81"))
+SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.059114"))
+SOC_B = float(os.getenv("TAVASCAN_SOC_B", "11.04"))
 
 TOPIC = "tavascan/soc"
 STATE_TOPIC = TOPIC + "/state"
