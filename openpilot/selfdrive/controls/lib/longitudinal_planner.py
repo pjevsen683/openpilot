@@ -17,7 +17,10 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
-A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
+# Fladt loft paa 7 km/t/s ved alle hastigheder (ejerens oenske).
+# Standard var [1.6, 1.2, 0.8, 0.6] = 5,8 / 4,3 / 2,9 / 2,2 km/t/s, altsaa
+# aftagende med farten. 1.94 m/s^2 = 6,98 km/t/s, lige under ACCEL_MAX = 2.0.
+A_CRUISE_MAX_VALS = [1.94, 1.94, 1.94, 1.94]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MIN = -1.2
