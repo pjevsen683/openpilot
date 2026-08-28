@@ -32,6 +32,8 @@ VPN_NET = os.getenv("WG_VPN_NET", "10.6.0.0/24")
 CHECK_S = float(os.getenv("WG_CHECK_INTERVAL", "60"))
 SOCK = f"/var/run/wireguard/{IFACE}.sock"
 
+_wg_proc: subprocess.Popen | None = None
+
 
 def conf_get(text: str, key: str) -> str | None:
   m = re.search(rf"^{key}\s*=\s*(.+)$", text, re.M | re.I)
@@ -98,14 +100,23 @@ def start_tunnel() -> bool:
     cloudlog.error("wg_tunnel: mangler felter i %s", CONF)
     return False
 
-  if not iface_exists():
+  global _wg_proc
+  if _wg_proc is None or _wg_proc.poll() is not None:
+    # Koer wireguard-go som VORES barneproces i forgrunden (-f) frem for at
+    # loesrive den. En detacheret proces overlevede ikke at foraeldren gik bort,
+    # og saa stod interfacet tilbage ukonfigureret. Doer supervisoren nu,
+    # genstarter manager den, og tunnelen rejses forfra.
+    sh("ip", "link", "delete", IFACE)
     sh("rm", "-f", SOCK)
-    subprocess.Popen(["sudo", "setsid", BINARY, "-f", IFACE],
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     stdin=subprocess.DEVNULL, start_new_session=True)
+    _wg_proc = subprocess.Popen(["sudo", BINARY, "-f", IFACE],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                stdin=subprocess.DEVNULL)
     for _ in range(80):
       if os.path.exists(SOCK):
         break
+      if _wg_proc.poll() is not None:
+        cloudlog.error("wg_tunnel: wireguard-go afsluttede med %s", _wg_proc.returncode)
+        return False
       time.sleep(0.1)
     else:
       cloudlog.error("wg_tunnel: wireguard-go startede ikke")
@@ -154,13 +165,15 @@ def start_tunnel() -> bool:
 
 
 def main() -> None:
+  global _wg_proc
   if not os.path.exists(CONF) or not os.path.exists(BINARY):
     cloudlog.info("wg_tunnel: ikke konfigureret, springer over")
     return
 
   rk = Ratekeeper(1.0 / CHECK_S)
   while True:
-    age = last_handshake_age() if iface_exists() else None
+    alive = _wg_proc is not None and _wg_proc.poll() is None
+    age = last_handshake_age() if (alive and iface_exists()) else None
     # Uden handshake i over tre keepalive-perioder er tunnelen reelt doed.
     if age is None or age > 90:
       cloudlog.info("wg_tunnel: rejser tunnel (handshake: %s)",
