@@ -19,6 +19,7 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import time
 
 from openpilot.common.swaglog import cloudlog
@@ -48,31 +49,30 @@ def iface_exists() -> bool:
   return subprocess.run(["ip", "link", "show", IFACE], capture_output=True).returncode == 0
 
 
-def ensure_sock_access() -> bool:
-  """wireguard-go koerer som root og laver socketen 0600 root:root, men denne proces
-  koerer som comma. Uden det her fejler enhver konfiguration med Permission denied --
-  hvilket er praecis hvad der skete ved foerste forsoeg paa at gore tunnelen permanent."""
-  if not os.path.exists(SOCK):
-    return False
-  if os.access(SOCK, os.R_OK | os.W_OK):
-    return True
-  sh("chown", f"{os.getuid()}:{os.getgid()}", SOCK)
-  return os.access(SOCK, os.R_OK | os.W_OK)
+# wireguard-go koerer som root og laver socketen 0700 root:root, mens denne proces
+# koerer som comma. Forsoeg paa at chown'e den var upaalidelige -- socketen naaede at
+# forsvinde mellem chown og brug -- saa vi taler med den som root i stedet.
+_UAPI_HELPER = (
+  "import socket,sys\n"
+  "s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\n"
+  "s.connect(sys.argv[1])\n"
+  "s.sendall(sys.stdin.buffer.read())\n"
+  "s.shutdown(socket.SHUT_WR)\n"
+  "sys.stdout.write(s.recv(65536).decode())\n"
+)
 
 
 def uapi(payload: str) -> str:
-  s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-  s.connect(SOCK)
-  s.sendall(payload.encode())
-  s.shutdown(socket.SHUT_WR)
-  out = s.recv(65536).decode()
-  s.close()
-  return out
+  r = subprocess.run(["sudo", sys.executable, "-c", _UAPI_HELPER, SOCK],
+                     input=payload, capture_output=True, text=True, timeout=10)
+  if r.returncode != 0:
+    raise OSError(r.stderr.strip()[:200] or "uapi fejlede")
+  return r.stdout
 
 
 def last_handshake_age() -> float | None:
   """Sekunder siden sidste handshake, eller None hvis aldrig / utilgaengelig."""
-  if not ensure_sock_access():
+  if not os.path.exists(SOCK):
     return None
   try:
     d = uapi("get=1\n\n")
@@ -121,10 +121,6 @@ def start_tunnel() -> bool:
     else:
       cloudlog.error("wg_tunnel: wireguard-go startede ikke")
       return False
-
-  if not ensure_sock_access():
-    cloudlog.error("wg_tunnel: kan ikke tilgaa %s", SOCK)
-    return False
 
   host, _, port = endpoint.rpartition(":")
   try:
