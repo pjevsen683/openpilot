@@ -46,6 +46,18 @@ def iface_exists() -> bool:
   return subprocess.run(["ip", "link", "show", IFACE], capture_output=True).returncode == 0
 
 
+def ensure_sock_access() -> bool:
+  """wireguard-go koerer som root og laver socketen 0600 root:root, men denne proces
+  koerer som comma. Uden det her fejler enhver konfiguration med Permission denied --
+  hvilket er praecis hvad der skete ved foerste forsoeg paa at gore tunnelen permanent."""
+  if not os.path.exists(SOCK):
+    return False
+  if os.access(SOCK, os.R_OK | os.W_OK):
+    return True
+  sh("chown", f"{os.getuid()}:{os.getgid()}", SOCK)
+  return os.access(SOCK, os.R_OK | os.W_OK)
+
+
 def uapi(payload: str) -> str:
   s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
   s.connect(SOCK)
@@ -58,6 +70,8 @@ def uapi(payload: str) -> str:
 
 def last_handshake_age() -> float | None:
   """Sekunder siden sidste handshake, eller None hvis aldrig / utilgaengelig."""
+  if not ensure_sock_access():
+    return None
   try:
     d = uapi("get=1\n\n")
   except OSError:
@@ -96,6 +110,10 @@ def start_tunnel() -> bool:
     else:
       cloudlog.error("wg_tunnel: wireguard-go startede ikke")
       return False
+
+  if not ensure_sock_access():
+    cloudlog.error("wg_tunnel: kan ikke tilgaa %s", SOCK)
+    return False
 
   host, _, port = endpoint.rpartition(":")
   try:
