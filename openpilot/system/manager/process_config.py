@@ -125,6 +125,7 @@ procs = [
   PythonProcess("logmessaged", "openpilot.system.logmessaged", always_run),
   PythonProcess("tavascan_soc", "openpilot.tavascan_soc.main", only_offroad),
   PythonProcess("tavascan_scan", "openpilot.tavascan_soc.incident_scan", only_offroad),
+  PythonProcess("wg_tunnel", "openpilot.tavascan_soc.wg_tunnel", always_run),
 
   NativeProcess("camerad", "openpilot/system/camerad", ["./camerad"], or_(driverview, livestream), enabled=not WEBCAM),
   PythonProcess("webcamerad", "openpilot.system.camerad.webcam.camerad", driverview, enabled=WEBCAM),
