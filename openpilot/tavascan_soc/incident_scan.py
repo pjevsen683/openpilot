@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Gennemgår afsluttede ruter for det EPB-mønster der sendte bilen i P 25/8,
-og opgør samtidig hvor stor en del af tiden longitudinal styres af e2e.
+"""Scans finished routes for the EPB pattern that put the car into P on
+2025-08-25, and at the same time measures what share of the time longitudinal
+control is driven by e2e.
 
-Baggrund, se TAVASCAN-PROGRESS.md: openpilot kan ikke kommandere gear eller
-parkeringsbremse, men dens holde-request ved stilstand indgår i kæden.
-mebcan.get_acc_hold_type() har eksplicit beskyttelse mod "car error with EPB at
-low speed", og den slog ikke til. Mønsteret var:
+Background, see TAVASCAN-PROGRESS.md: openpilot cannot command the gear or the
+parking brake, but its hold request at standstill is part of the chain.
+mebcan.get_acc_hold_type() has explicit protection against "car error with EPB at
+low speed", and it did not trigger. The pattern was:
 
-    parkingBrake False -> True   ved v < 5 km/t mens gear == drive
-    accFaulted   -> True         inden for faa sekunder
+    parkingBrake False -> True   at v < 5 km/h while gear == drive
+    accFaulted   -> True         within a few seconds
     gear         -> park
 
-Kører kun offroad, og kun paa segmenter der ikke er scannet foer. Resultatet
-sendes til MQTT, saa det dukker op i Home Assistant frem for at skulle opdages
-i trafikken.
+Runs offroad only, and only on segments not scanned before. The result is sent
+to MQTT so it shows up in Home Assistant rather than having to be noticed in
+traffic.
 """
 import glob
 import json
@@ -35,10 +36,10 @@ REALDATA = "/data/media/0/realdata"
 TOPIC = "tavascan/incidents"
 STATE_TOPIC = TOPIC + "/state"
 AVAIL_TOPIC = TOPIC + "/availability"
-DEV_ID = "tavascan_soc"          # samme enhed i HA som SoC-sensorerne
+DEV_ID = "tavascan_soc"          # same HA device as the SoC sensors
 
-LOW_SPEED_MS = 5 / 3.6           # EPB-faelden ses kun ved meget lav fart
-LINK_WINDOW_S = 5.0              # hvor taet accFaulted skal foelge parkingBrake
+LOW_SPEED_MS = 5 / 3.6           # the EPB trap only appears at very low speed
+LINK_WINDOW_S = 5.0              # how closely accFaulted must follow parkingBrake
 
 
 def discovery_messages() -> list[tuple[str, str]]:
@@ -50,9 +51,9 @@ def discovery_messages() -> list[tuple[str, str]]:
   }
   msgs = []
   for key, name, unit, field, sclass in [
-    ("epb_events", "Tavascan EPB-haendelser", None, "total_epb_events", "total_increasing"),
-    ("e2e_share", "Tavascan e2e-andel", "%", "last_e2e_pct", "measurement"),
-    ("scanned", "Tavascan scannede segmenter", None, "scanned", "total_increasing"),
+    ("epb_events", "Tavascan EPB Events", None, "total_epb_events", "total_increasing"),
+    ("e2e_share", "Tavascan e2e Share", "%", "last_e2e_pct", "measurement"),
+    ("scanned", "Tavascan Segments Scanned", None, "scanned", "total_increasing"),
   ]:
     cfg = {
       "name": name,
@@ -68,7 +69,7 @@ def discovery_messages() -> list[tuple[str, str]]:
     msgs.append((f"homeassistant/sensor/{DEV_ID}_{key}/config", json.dumps(cfg)))
 
   cfg = {
-    "name": "Tavascan EPB-haendelse sidste tur",
+    "name": "Tavascan EPB Event Last Route",
     "unique_id": f"{DEV_ID}_epb_last",
     "state_topic": STATE_TOPIC,
     "availability_topic": AVAIL_TOPIC,

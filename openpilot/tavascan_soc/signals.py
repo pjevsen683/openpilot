@@ -1,37 +1,37 @@
-"""Signaldefinitioner for de CAN-beskeder vi aflæser på Cupra Tavascan (MEB GEN2).
+"""Signal definitions for the CAN messages we read on a Cupra Tavascan (MEB GEN2).
 
-Alle bitpositioner er little endian, som i DBC'en.
+All bit positions are little endian, as in the DBC.
 
-Flere af signalerne sender indimellem deres maksimalværdi som "ugyldig" — vi så
-Nutzbare_Energie sende 2046 og Kapazitaet sende 409,4 Ah (= 2047 × 0,2). Derfor
-har hvert numerisk signal en gyldighedsgrænse, og der tages median over
-måleperioden. Uden det får man spring på flere procent uden grund.
+Several of the signals occasionally send their maximum value to mean "invalid" --
+we saw Nutzbare_Energie send 2046 and Kapazitaet send 409.4 Ah (= 2047 * 0.2).
+Each numeric signal therefore has a validity range, and the median is taken over
+the sampling window. Without that you get jumps of several percent for no reason.
 """
 
-ADDR_HVEM_02 = 0x5AC       # energi og klima-effekt
-ADDR_DIAGNOSE_01 = 0x6B2   # kilometerstand
-ADDR_ZV_02 = 0x583         # centrallås og døre
+ADDR_HVEM_02 = 0x5AC       # energy and climate power
+ADDR_DIAGNOSE_01 = 0x6B2   # odometer
+ADDR_ZV_02 = 0x583         # central locking and doors
 
 
 def _bits(data: bytes, start: int, length: int) -> int:
   return (int.from_bytes(data, "little") >> start) & ((1 << length) - 1)
 
 
-# navn -> (adresse, startbit, antal bit, skala, min_gyldig_raa, maks_gyldig_raa)
-# Klimaeffekt har min 0: nul watt betyder "klima slukket" og er en gyldig
-# aflaesning. Energi og kilometerstand har min 1, da nul dér er usandsynligt
-# og i praksis betyder at signalet ikke er udfyldt endnu.
+# name -> (address, start bit, bit count, scale, min_valid_raw, max_valid_raw)
+# Climate power has min 0: zero watts means "climate off" and is a valid reading.
+# Energy and odometer have min 1, since zero there is implausible and in practice
+# means the signal has not been populated yet.
 NUMERIC = {
   "energy_raw":   (ADDR_HVEM_02, 32, 11, 1.0, 1, 2040),
   "climate_w":    (ADDR_HVEM_02, 24, 8, 50.0, 0, 254),
   "odometer_km":  (ADDR_DIAGNOSE_01, 8, 20, 1.0, 1, 1048570),
 }
 
-# Bit-signaler: navn -> (adresse, bit)
+# Bit signals: name -> (address, bit)
 BOOLEAN = {
-  # ZV_verriegelt_extern_ist. Verificeret i BEGGE retninger 20/8: app-oplaasning
-  # gav 1->0, bilens auto-genlaasning 45 s senere gav 0->1. To skift i 1602
-  # beskeder, ingen falske udslag.
+  # ZV_verriegelt_extern_ist. Verified in BOTH directions on 2025-08-20: unlocking
+  # from the app gave 1->0, the car's auto-relock 45 s later gave 0->1. Two
+  # transitions across 1602 messages, no spurious flips.
   "locked":       (ADDR_ZV_02, 17),
   "door_driver":  (ADDR_ZV_02, 24),
   "door_pass":    (ADDR_ZV_02, 25),
@@ -44,12 +44,12 @@ WANTED_ADDRS = {ADDR_HVEM_02, ADDR_DIAGNOSE_01, ADDR_ZV_02}
 
 
 def decode(frames: dict[int, list[bytes]]) -> dict:
-  """frames: adresse -> liste af payloads set i maaleperioden.
+  """frames: address -> list of payloads seen during the sampling window.
 
-  Numeriske vaerdier returneres som median over gyldige aflaesninger.
-  Bit-vaerdier returneres som den hyppigste vaerdi.
-  Signaler uden gyldige data udelades helt, saa kalderen kan beholde en
-  tidligere vaerdi frem for at publicere noget forkert.
+  Numeric values are returned as the median over valid readings.
+  Bit values are returned as the most common value.
+  Signals with no valid data are omitted entirely, so the caller can keep a
+  previous value rather than publish something wrong.
   """
   out: dict = {}
 

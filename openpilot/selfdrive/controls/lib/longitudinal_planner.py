@@ -151,8 +151,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     is_e2e = self.is_e2e(sm)
 
-    # Forbud mod overhaling indenom: saenk kun den oenskede fart, aldrig haev den.
-    # Slaaet fra som standard; uden parameteren UndertakeGuard er det en no-op.
+    # Undertaking guard: only ever lowers the desired speed, never raises it.
+    # Off by default; without the UndertakeGuard parameter this is a no-op.
     self.undertake_guard.update(v_ego, self.dt)
     v_cruise = self.undertake_guard.apply(v_cruise)
 

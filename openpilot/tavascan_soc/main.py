@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
-"""Publicerer data fra Cupra Tavascan til MQTT for Home Assistant.
+"""Publishes data from a Cupra Tavascan to MQTT for Home Assistant.
 
-Kører på comma-enheden og SENDER data ud. Der er bevidst ingen vej ind i
-enheden: ingen SSH, ingen lyttende port, ingen credentials — brokeren er
-anonym.
+Runs on the comma device and PUSHES data out. There is deliberately no way in:
+no SSH, no listening port, no credentials -- the broker is anonymous.
 
-Processen kører KUN offroad (only_offroad), så den ikke belaster enheden
-under kørsel. Det koster ingenting: alle vinduer hvor bussen er vågen og
-værdierne ændrer sig — opladning og de ~15 min efter parkering — er offroad.
+The process runs ONLY offroad (only_offroad) so it does not load the device
+while driving. That costs nothing: every window in which the bus is awake and
+the values change -- charging, and the ~15 min after parking -- is offroad.
 
-Bilens CAN-bus sover når den holder parkeret. Sidste kendte værdi bevares
-derfor pr. signal, og en age-sensor viser hvor gammel aflæsningen er.
-12V-spændingen er undtagelsen: den kommer fra panda'en, ikke fra CAN, og er
-frisk også mens bussen sover.
+The car's CAN bus sleeps while parked. The last known value is therefore kept
+per signal, and an age sensor shows how old the reading is. The 12V voltage is
+the exception: it comes from the panda, not from CAN, and stays fresh even
+while the bus sleeps.
 
-SoC: forholdet mellem den rå værdi og bilens viste SoC er IKKE proportionalt,
-så hverken DBC'ens 50 Wh eller de 62,5 Wh vi først gættede på giver en
-troværdig kapacitet (68,9 hhv. 86,1 kWh mod bilens 77). SoC beregnes derfor af
-en lineær kalibrering mod displayet, se SOC_A/SOC_B. Se BATTERI-SOC-NOTER.md.
+SoC: the ratio between the raw value and the car's displayed SoC is NOT
+proportional, so neither the DBC's 50 Wh nor the 62.5 Wh we first guessed give
+a believable capacity (68.9 and 86.1 kWh respectively, against the car's 77).
+SoC is therefore computed from a linear calibration against the display, see
+SOC_A/SOC_B. See BATTERI-SOC-NOTER.md.
 """
 import json
 import os
@@ -34,19 +34,19 @@ MQTT_PORT = int(os.getenv("TAVASCAN_MQTT_PORT", "1883"))
 INTERVAL_S = float(os.getenv("TAVASCAN_INTERVAL", "60"))
 SAMPLE_S = float(os.getenv("TAVASCAN_SAMPLE_S", "6"))
 
-# SoC kalibreres lineaert mod bilens eget display: soc_pct = SOC_A * raw + SOC_B.
-# Fittet paa seks aflaesninger af bilens display under en enkelt lang opladning
-# med konstant effekt, som gav et rent spaend fra 40 til 85 %:
+# SoC is calibrated linearly against the car's own display: soc_pct = SOC_A * raw + SOC_B.
+# Fitted on six readings of the car's display during a single long charge at
+# constant power, which gave a clean span from 40 to 85 %:
 #   raw 493->40, 699->53, 785->57, 925->67, 1114->80, 1195->85
-# Stoerste afvigelse 1,3 pp. Haeldningerne mellem nabopunkter (0,047-0,071)
-# svinger uden systematisk trend, saa en ret linje er den rigtige model -
-# spredningen er afrundingsstoej fra displayets hele procenter.
-# Offsettet paa ca. +11 % er reelt, ikke et artefakt: forholdene i raa vaerdi
-# matcher ikke forholdene i SoC, hvilket de skulle hvis SoC blot var
-# energi/kapacitet. Der er en reserve under displayets nul.
-# ÅBENT: alle punkter ligger mellem 40 og 57 %. Ekstrapolationen over 80 % og
-# under 25 % er utestet — derfor udstilles ogsaa den raa vaerdi som egen sensor,
-# saa den kan logges og fittes over et bredere omraade.
+# Largest deviation 1.3 pp. The slopes between neighbouring points (0.047-0.071)
+# vary without any systematic trend, so a straight line is the right model -- the
+# scatter is rounding noise from the display's whole percentages.
+# The offset of about +11 % is real, not an artefact: ratios in the raw value do
+# not match ratios in SoC, which they would if SoC were simply energy/capacity.
+# There is a reserve below the display's zero.
+# OPEN: the extrapolation above 85 % and below 25 % is untested -- which is why
+# the raw value is also exposed as its own sensor, so it can be logged and
+# refitted over a wider range.
 SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.064640"))
 SOC_B = float(os.getenv("TAVASCAN_SOC_B", "7.53"))
 
@@ -62,25 +62,24 @@ DEVICE = {
   "model": "Tavascan (via comma CAN)",
 }
 
-# key, navn, enhed, device_class, felt i state, state_class
+# key, name, unit, device_class, field in state, state_class
 SENSORS = [
   ("soc", "Tavascan SoC", "%", "battery", "soc_pct", "measurement"),
-  # Ukalibreret raa taellervaerdi fra HVEM_02. Eksponeret med vilje, saa den kan
-  # logges i HA's langtidsstatistik og sammenholdes med bilens eget display over
-  # et bredt SoC-omraade. Kalibreringen nedenfor bygger indtil videre kun paa
-  # punkter mellem 40 og 57 %.
-  ("raw", "Tavascan SoC raa", None, None, "raw", "measurement"),
-  ("odometer", "Tavascan Kilometerstand", "km", "distance", "odometer_km", "total_increasing"),
-  ("climate_power", "Tavascan Klimaeffekt", "W", "power", "climate_w", "measurement"),
-  ("volt12", "Tavascan 12V batteri", "V", "voltage", "volt12", "measurement"),
-  ("age", "Tavascan CAN alder", "s", "duration", "age_s", None),
+  # Uncalibrated raw counter from HVEM_02. Exposed on purpose so it can be logged
+  # in HA's long-term statistics and compared against the car's own display over a
+  # wide SoC range.
+  ("raw", "Tavascan SoC raw", None, None, "raw", "measurement"),
+  ("odometer", "Tavascan Odometer", "km", "distance", "odometer_km", "total_increasing"),
+  ("climate_power", "Tavascan Climate Power", "W", "power", "climate_w", "measurement"),
+  ("volt12", "Tavascan 12V Battery", "V", "voltage", "volt12", "measurement"),
+  ("age", "Tavascan CAN Age", "s", "duration", "age_s", None),
 ]
 
-# key, navn, felt i state, device_class
+# key, name, field in state, device_class
 BINARY_SENSORS = [
-  ("awake", "Tavascan CAN vaagen", "awake", None),
-  ("locked", "Tavascan laast", "locked", "lock"),
-  ("door_open", "Tavascan doer aaben", "any_door_open", "door"),
+  ("awake", "Tavascan CAN Awake", "awake", None),
+  ("locked", "Tavascan Locked", "locked", "lock"),
+  ("door_open", "Tavascan Door Open", "any_door_open", "door"),
 ]
 
 
@@ -104,7 +103,7 @@ def discovery_messages() -> list[tuple[str, str]]:
     msgs.append((f"homeassistant/sensor/{DEV_ID}_{key}/config", json.dumps(cfg)))
 
   for key, name, field, dclass in BINARY_SENSORS:
-    # HA's lock-klasse er omvendt af vores felt: on betyder ULAAST.
+    # HA's lock class is inverted relative to our field: on means UNLOCKED.
     on, off = ("False", "True") if dclass == "lock" else ("True", "False")
     cfg = {
       "name": name,
@@ -123,7 +122,7 @@ def discovery_messages() -> list[tuple[str, str]]:
 
 
 def sample(sock, duration: float) -> tuple[bool, dict]:
-  """Returnerer (bussen_var_vaagen, dekodede_signaler)."""
+  """Returns (bus_was_awake, decoded_signals)."""
   frames: dict[int, list[bytes]] = {a: [] for a in signals.WANTED_ADDRS}
   seen = 0
   t0 = time.monotonic()
@@ -145,7 +144,7 @@ def main() -> None:
   last_ts: float | None = None
   rk = Ratekeeper(1.0 / INTERVAL_S)
 
-  cloudlog.info(f"tavascan_soc: sender til {MQTT_HOST}:{MQTT_PORT} hvert {INTERVAL_S:.0f}s")
+  cloudlog.info(f"tavascan_soc: publishing to {MQTT_HOST}:{MQTT_PORT} every {INTERVAL_S:.0f}s")
 
   while True:
     awake, decoded = sample(can_sock, SAMPLE_S)
@@ -189,8 +188,8 @@ def main() -> None:
       publish(MQTT_HOST, MQTT_PORT, "tavascan-comma", msgs)
       discovery_sent = True
     except OSError as e:
-      # Forventet naar bilen ikke er paa hjemme-WiFi. Ikke en fejl.
-      cloudlog.debug(f"tavascan_soc: broker ikke naaet ({e})")
+      # Expected when the car is not on the home WiFi. Not an error.
+      cloudlog.debug(f"tavascan_soc: broker unreachable ({e})")
       discovery_sent = False
 
     rk.keep_time()

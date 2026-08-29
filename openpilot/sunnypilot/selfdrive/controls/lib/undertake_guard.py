@@ -1,35 +1,35 @@
 #!/usr/bin/env python3
-"""Forhindrer overhaling indenom ved at lægge et fartloft efter venstre vognbane.
+"""Prevents undertaking by capping cruise speed behind the left lane.
 
-I Danmark må man ikke overhale indenom. Bilens egen Travel Assist sænker farten
-når der ligger et langsommere køretøj i venstre spor foran; openpilot gør ikke,
-fordi planlæggeren udelukkende ser køretøjer i ens EGEN bane
+Undertaking is illegal in Denmark. The car's own Travel Assist slows down when a
+slower vehicle sits ahead in the left lane; openpilot does not, because the
+planner only ever sees vehicles in our OWN lane
 (modelV2.leadsV3 -> radarState.leadOne/leadTwo).
 
-Bilens radar rapporterer derimod objekter opdelt paa vognbane i Strukturen_01
-(0x24F, 25 Hz paa bus 2): to objekter i hver af samme/venstre/hoejre bane, med
-afstand, sideafstand og relativ hastighed. Verificeret mod en optagelse fra
-motorvejen: venstre-bane-objekter dukkede op med sideafstand ca. +4,0 m og
-relative hastigheder der stemte med trafikken.
+The car's radar, by contrast, reports objects grouped by lane in Strukturen_01
+(0x24F, 25 Hz on bus 2): two objects in each of the same/left/right lanes, with
+longitudinal distance, lateral distance and relative velocity. Verified against a
+motorway recording: left-lane objects appeared at a lateral distance of about
++4.0 m with relative velocities matching the surrounding traffic.
 
-openpilot saetter VolkswagenFlags.DISABLE_RADAR paa denne bil (networkLocation
-er fwdCamera), saa radar_interface returnerer None og beskeden aldrig laeses.
-Vi laeser den derfor selv. Vi sender intet -- kun aflytning.
+openpilot sets VolkswagenFlags.DISABLE_RADAR on this car (networkLocation is
+fwdCamera), so radar_interface returns None and the message is never parsed. We
+therefore parse it ourselves. We transmit nothing -- this is listen-only.
 
 DESIGN
-  * Slaaet FRA som standard. Kraever parameteren UndertakeGuard.
-  * Saetter kun et LOFT paa den oenskede fart. Bremser ikke selv, og kan ikke
-    faa bilen til at accelerere. Den eksisterende MPC klarer nedbremsningen.
-  * Virker kun over MIN_SPEED. I kø er indenom-passage tilladt, og funktionen
-    ville vaere til gene.
-  * Roerer ikke stop og igangsaetning. Vi har en uafklaret fejl i EPB-overgangen
-    ved lave hastigheder, og den skal ikke kunne paavirkes herfra.
+  * OFF by default. Requires the UndertakeGuard parameter.
+  * Only ever applies a CAP to the desired speed. It never brakes on its own and
+    can never make the car accelerate. The existing MPC does the slowing down.
+  * Only active above MIN_SPEED. In stop-and-go traffic passing on the right is
+    legal, and the feature would only get in the way.
+  * Does not touch stopping or pulling away. We have an unresolved fault in the
+    EPB transition at low speed, and nothing here should be able to affect it.
 
-AFGRAENSNING
-  Modulet laeser raa CAN i plannerd, hvilket ikke er saedvanligt der. Alternativet
-  var at udvide cereal-skemaet, opendbc og bilaget -- tre repoer og en
-  skemaaendring. Det her er nemmere at gennemgaa og nemmere at fjerne igen.
-  Naar funktionen er slaaet fra, oprettes socket'en slet ikke.
+SCOPE
+  This module parses raw CAN inside plannerd, which is unusual for that process.
+  The alternative was extending the cereal schema, opendbc and the car layer --
+  three repositories and a schema change. This is easier to review and easier to
+  remove again. When the feature is off, the socket is never even opened.
 """
 import os
 
@@ -40,25 +40,25 @@ from opendbc.car.common.conversions import Conversions as CV
 RADAR_ADDR = 0x24F
 RADAR_BUS = 2
 
-# Bitpositioner fra _vw_meb_common.dbc, Strukturen_01
+# Bit positions from _vw_meb_common.dbc, Strukturen_01
 _DISTANCE_STATUS = (13, 2)
 _VALID_STATUS = 0
-# (startbit, laengde) for afstand / sideafstand / relativ hastighed
+# (start bit, length) for distance / lateral distance / relative velocity
 _LEFT_LANE = ((96, 12), (108, 10), (118, 10))
 
 _DIST_SCALE, _DIST_OFF = 0.0625, -3.75
 _LAT_SCALE, _LAT_OFF = 0.065, -33.28
 _VEL_SCALE, _VEL_OFF = 0.25, -128.0
 
-# Aktiveringsgraenser
+# Activation limits
 MIN_SPEED = float(os.getenv("UG_MIN_SPEED_KPH", "70")) * CV.KPH_TO_MS
-MAX_RANGE = float(os.getenv("UG_MAX_RANGE", "90"))       # m fremad
-MIN_RANGE = float(os.getenv("UG_MIN_RANGE", "3"))        # m, filtrerer skrald fra
-LAT_MIN, LAT_MAX = 2.0, 6.0                              # m, plausibel nabobane
-# Hvor meget hurtigere end venstre spor vi accepterer at koere. Et lille slip
-# undgaar at loftet slaar til ved ubetydelige forskelle.
+MAX_RANGE = float(os.getenv("UG_MAX_RANGE", "90"))       # m ahead
+MIN_RANGE = float(os.getenv("UG_MIN_RANGE", "3"))        # m, filters out junk
+LAT_MIN, LAT_MAX = 2.0, 6.0                              # m, plausible adjacent lane
+# How much faster than the left lane we accept travelling. A small slip keeps the
+# cap from engaging on insignificant differences.
 SLIP = float(os.getenv("UG_SLIP_KPH", "4")) * CV.KPH_TO_MS
-# Loftet slippes gradvist naar objektet forsvinder, saa farten ikke springer.
+# The cap is released gradually once the object disappears, so speed does not jump.
 RELEASE_S = 2.0
 
 
@@ -70,13 +70,13 @@ class UndertakeGuard:
   def __init__(self):
     self.enabled = Params().get_bool("UndertakeGuard")
     self._sock = messaging.sub_sock("can", timeout=0) if self.enabled else None
-    self.cap: float | None = None          # m/s, eller None naar inaktiv
-    self.lead_v: float | None = None       # venstre-bane-objektets fart, m/s
-    self.lead_d: float | None = None       # dets afstand, m
+    self.cap: float | None = None          # m/s, or None when inactive
+    self.lead_v: float | None = None       # left-lane object's speed, m/s
+    self.lead_d: float | None = None       # its distance, m
     self._age = 0.0
 
   def _decode(self, data: bytes, v_ego: float) -> tuple[float, float] | None:
-    """Returnerer (afstand, absolut fart) for venstre-bane-objekt, ellers None."""
+    """Returns (distance, absolute speed) for a left-lane object, else None."""
     if _bits(data, *_DISTANCE_STATUS) != _VALID_STATUS:
       return None
     (ds, dl), (ls, ll), (vs, vl) = _LEFT_LANE
@@ -86,14 +86,15 @@ class UndertakeGuard:
 
     if not (MIN_RANGE < dist < MAX_RANGE):
       return None
-    # Sideafstanden er positiv mod venstre i radarens billede -- modsat modellens
-    # laneLines. Kontrolleret mod optagelse: nabobane laa paa ca. +4,0 m.
+    # Lateral distance is positive to the left in the radar's frame -- the opposite
+    # of the model's laneLines. Checked against a recording: the adjacent lane sat
+    # at about +4.0 m.
     if not (LAT_MIN < lat < LAT_MAX):
       return None
     return dist, v_ego + rel
 
   def update(self, v_ego: float, dt: float) -> None:
-    """Kaldes hver planlaegger-tick. Opdaterer self.cap."""
+    """Called every planner tick. Updates self.cap."""
     if self._sock is None:
       return
 
@@ -111,8 +112,8 @@ class UndertakeGuard:
       if self._age > RELEASE_S:
         self.lead_d = self.lead_v = None
 
-    # Loftet gaelder kun naar vi ellers ville passere et langsommere koeretoej
-    # indenom. Er venstre spor hurtigere -- det normale tilfaelde -- sker intet.
+    # The cap only applies when we would otherwise undertake a slower vehicle. If
+    # the left lane is faster -- the normal case -- nothing happens.
     if (self.lead_v is not None and v_ego > MIN_SPEED
         and self.lead_v + SLIP < v_ego):
       self.cap = max(self.lead_v + SLIP, MIN_SPEED)
@@ -120,7 +121,7 @@ class UndertakeGuard:
       self.cap = None
 
   def apply(self, v_cruise: float) -> float:
-    """Saenker den oenskede fart til loftet. Kan aldrig haeve den."""
+    """Lowers the desired speed to the cap. Can never raise it."""
     if self.cap is None:
       return v_cruise
     return min(v_cruise, self.cap)
