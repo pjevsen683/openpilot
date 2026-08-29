@@ -1,4 +1,4 @@
-"""Minimal MQTT 3.1.1 publisher - kun stdlib, ingen credentials, publish-only QoS0."""
+"""Minimal MQTT 3.1.1 publisher - stdlib only, no credentials, publish-only QoS0."""
 import socket, struct
 
 def _rem_len(n):

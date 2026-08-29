@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Holder en WireGuard-tunnel til hjemmenettet oppe.
+"""Keeps a WireGuard tunnel to the home network up.
 
-Kernen paa AGNOS (4.9) har ikke WireGuard-modulet, saa vi bruger wireguard-go i
-userspace via /dev/net/tun. Binaeren ligger i /data og er bygget fra
+The AGNOS kernel (4.9) does not have the WireGuard module, so we use wireguard-go
+in userspace via /dev/net/tun. The binary lives in /data and is built from
 git.zx2c4.com/wireguard-go.
 
-Split tunnel med vilje: kun hjemmenettet og VPN-subnettet routes gennem
-tunnelen. Al oevrig trafik -- openpilots uploads, modeldownloads -- gaar
-udenom, saa bilens dataforbrug ikke loeber gennem hjemmeforbindelsen og en
-nedadgaaende tunnel ikke tager internettet med sig.
+Split tunnel by design: only the home network and the VPN subnet are routed
+through the tunnel. All other traffic -- openpilot's uploads, model downloads --
+goes around it, so the car's data usage does not run through the home connection
+and a tunnel going down does not take the internet with it.
 
-Ruten til hjemmenettet tilfoejes kun naar enheden IKKE allerede er paa det.
-Ellers ville trafik til maskiner vi kan naa direkte tage vejen rundt gennem
-VPN'en -- og i vaerste fald kappe den SSH-session man sidder paa.
+The route to the home network is only added when the device is NOT already on it.
+Otherwise traffic to machines we can reach directly would take the long way round
+through the VPN -- and in the worst case cut the SSH session you are sitting on.
 """
 import base64
 import os
@@ -49,9 +49,9 @@ def iface_exists() -> bool:
   return subprocess.run(["ip", "link", "show", IFACE], capture_output=True).returncode == 0
 
 
-# wireguard-go koerer som root og laver socketen 0700 root:root, mens denne proces
-# koerer som comma. Forsoeg paa at chown'e den var upaalidelige -- socketen naaede at
-# forsvinde mellem chown og brug -- saa vi taler med den som root i stedet.
+# wireguard-go runs as root and creates the socket 0700 root:root, while this
+# process runs as comma. Attempts to chown it were unreliable -- the socket could
+# disappear between chown and use -- so we talk to it as root instead.
 _UAPI_HELPER = (
   "import socket,sys\n"
   "s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)\n"
@@ -71,7 +71,7 @@ def uapi(payload: str) -> str:
 
 
 def last_handshake_age() -> float | None:
-  """Sekunder siden sidste handshake, eller None hvis aldrig / utilgaengelig."""
+  """Seconds since the last handshake, or None if never / unavailable."""
   if not os.path.exists(SOCK):
     return None
   try:
@@ -97,15 +97,15 @@ def start_tunnel() -> bool:
   addr, endpoint = conf_get(conf, "Address"), conf_get(conf, "Endpoint")
   keep = conf_get(conf, "PersistentKeepalive") or "25"
   if not all((priv, peer, addr, endpoint)):
-    cloudlog.error("wg_tunnel: mangler felter i %s", CONF)
+    cloudlog.error("wg_tunnel: missing fields in %s", CONF)
     return False
 
   global _wg_proc
   if _wg_proc is None or _wg_proc.poll() is not None:
-    # Koer wireguard-go som VORES barneproces i forgrunden (-f) frem for at
-    # loesrive den. En detacheret proces overlevede ikke at foraeldren gik bort,
-    # og saa stod interfacet tilbage ukonfigureret. Doer supervisoren nu,
-    # genstarter manager den, og tunnelen rejses forfra.
+    # Run wireguard-go as OUR child process in the foreground (-f) rather than
+    # detaching it. A detached process did not survive the parent going away, and
+    # the interface was then left unconfigured. If the supervisor dies now,
+    # manager restarts it and the tunnel is brought up from scratch.
     sh("ip", "link", "delete", IFACE)
     sh("rm", "-f", SOCK)
     _wg_proc = subprocess.Popen(["sudo", BINARY, "-f", IFACE],
@@ -115,18 +115,18 @@ def start_tunnel() -> bool:
       if os.path.exists(SOCK):
         break
       if _wg_proc.poll() is not None:
-        cloudlog.error("wg_tunnel: wireguard-go afsluttede med %s", _wg_proc.returncode)
+        cloudlog.error("wg_tunnel: wireguard-go exited with %s", _wg_proc.returncode)
         return False
       time.sleep(0.1)
     else:
-      cloudlog.error("wg_tunnel: wireguard-go startede ikke")
+      cloudlog.error("wg_tunnel: wireguard-go did not start")
       return False
 
   host, _, port = endpoint.rpartition(":")
   try:
     ep_ip = socket.getaddrinfo(host, None, socket.AF_INET)[0][4][0]
   except socket.gaierror as e:
-    cloudlog.warning("wg_tunnel: kan ikke slaa %s op (%s)", host, e)
+    cloudlog.warning("wg_tunnel: cannot resolve %s (%s)", host, e)
     return False
 
   hexk = lambda b: base64.b64decode(b).hex()  # noqa: E731
@@ -147,7 +147,7 @@ def start_tunnel() -> bool:
       cloudlog.error("wg_tunnel: UAPI afviste konfigurationen")
       return False
   except OSError as e:
-    cloudlog.error("wg_tunnel: UAPI utilgaengelig (%s)", e)
+    cloudlog.error("wg_tunnel: UAPI unavailable (%s)", e)
     return False
 
   sh("ip", "address", "add", addr, "dev", IFACE)
@@ -156,23 +156,23 @@ def start_tunnel() -> bool:
   if not on_home_network():
     sh("ip", "route", "add", HOME_NET, "dev", IFACE)
 
-  cloudlog.info("wg_tunnel: oppe mod %s (%s:%s) som %s", host, ep_ip, port, addr)
+  cloudlog.info("wg_tunnel: up to %s (%s:%s) as %s", host, ep_ip, port, addr)
   return True
 
 
 def main() -> None:
   global _wg_proc
   if not os.path.exists(CONF) or not os.path.exists(BINARY):
-    cloudlog.info("wg_tunnel: ikke konfigureret, springer over")
+    cloudlog.info("wg_tunnel: not configured, skipping")
     return
 
   rk = Ratekeeper(1.0 / CHECK_S)
   while True:
     alive = _wg_proc is not None and _wg_proc.poll() is None
     age = last_handshake_age() if (alive and iface_exists()) else None
-    # Uden handshake i over tre keepalive-perioder er tunnelen reelt doed.
+    # With no handshake for over three keepalive periods the tunnel is dead.
     if age is None or age > 90:
-      cloudlog.info("wg_tunnel: rejser tunnel (handshake: %s)",
+      cloudlog.info("wg_tunnel: bringing up tunnel (handshake: %s)",
                     "aldrig" if age is None else f"{age:.0f}s siden")
       start_tunnel()
     rk.keep_time()
