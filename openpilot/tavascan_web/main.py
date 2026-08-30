@@ -23,7 +23,7 @@ from openpilot.cereal import messaging
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.realtime import Ratekeeper
 from opendbc.car.common.conversions import Conversions as CV
-from openpilot.tavascan_web import radar, shadow
+from openpilot.tavascan_web import osm, radar, shadow
 
 PORT = int(os.getenv("TAVASCAN_WEB_PORT", "8088"))
 TRACE = os.getenv("TAVASCAN_WEB_TRACE", "/data/tavascan_shadow.jsonl")
@@ -36,11 +36,13 @@ _lock = threading.Lock()
 
 def collector() -> None:
   can_sock = messaging.sub_sock("can", timeout=20)
-  sm = messaging.SubMaster(["carState", "modelV2", "longitudinalPlan"])
+  sm = messaging.SubMaster(["carState", "modelV2", "longitudinalPlan", "liveMapDataSP"])
   rk = Ratekeeper(10.0)
   objects: dict = {}
   last_radar = 0.0
   was_active = False
+  osm_view: dict = {"params": {}, "maps": osm.maps_installed()}
+  osm_tick = 0
 
   while True:
     sm.update(0)
@@ -62,6 +64,12 @@ def collector() -> None:
     ut = shadow.undertake(objects, v_ego, lanes["rightmost"])
     mg = shadow.merge_yield(objects, v_ego)
 
+    # The params directory is a filesystem read; once a second is plenty.
+    osm_tick += 1
+    if osm_tick % 10 == 1:
+      osm_view = {"params": osm.read_params(), "maps": osm.maps_installed()}
+    osm_view["live"] = osm.read_live(sm)
+
     v_cruise = sm["carState"].cruiseState.speed if sm.updated["carState"] else 0.0
     caps = [r["cap"] for r in (ut, mg) if r["cap"] is not None]
     combined = min(caps) if caps else None
@@ -75,6 +83,7 @@ def collector() -> None:
       "radar_age_s": round(radar_age, 1) if radar_age is not None else None,
       "objects": objects,
       "lanes": lanes,
+      "osm": osm_view,
       "undertake": ut,
       "merge_yield": mg,
       "would_cap_kph": round(combined * CV.MS_TO_KPH, 1) if combined else None,

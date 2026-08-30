@@ -49,6 +49,30 @@ function objects(o) {
   return `<table><tr><th>slot</th><th>ahead</th><th>lateral</th><th>speed</th></tr>${rows}</table>`;
 }
 
+function osmPanel(o) {
+  if (!o) return '<p class="none">no map layer</p>';
+  const L = o.live || {};
+  const maps = o.maps || {};
+  const head = `<div class="card">
+      <div>speed limit <b>${L.speed_limit_kph ?? "–"}</b> km/h
+        &nbsp; ahead <b>${L.ahead_kph ?? "–"}</b> km/h
+        ${L.ahead_distance_m != null ? `in ${L.ahead_distance_m.toFixed(0)} m` : ""}</div>
+      <div class="why">${L.road_name ?? "no road name"} &middot;
+        offline maps: ${maps.present ? maps.files + " files" : "NONE DOWNLOADED"}</div></div>`;
+
+  const keys = Object.keys(o.params || {}).sort();
+  if (!keys.length) return head + '<p class="none">mapd publishes no params right now</p>';
+  const rows = keys.map(k => {
+    let v = o.params[k];
+    if (v && v._list) v = `${v.count} points, first ${JSON.stringify(v.first)}`;
+    else if (v && v._truncated) v = `${v.bytes} bytes`;
+    else v = JSON.stringify(v);
+    if (v.length > 90) v = v.slice(0, 90) + "…";
+    return `<tr><td>${k}</td><td>${v}</td></tr>`;
+  }).join("");
+  return head + `<table><tr><th>param</th><th>value</th></tr>${rows}</table>`;
+}
+
 function render(d) {
   if (!d.ready) { document.getElementById("app").innerHTML =
     '<p class="none">waiting for the car…</p>'; return; }
@@ -69,6 +93,8 @@ function render(d) {
     ${verdict("Merge yield", d.merge_yield)}
     <h2>radar ${stale ? "(stale)" : ""}</h2>
     <div class="${stale ? "stale" : ""}">${objects(d.objects)}</div>
+    <h2>map layer (discovery &mdash; what mapd actually gives us)</h2>
+    ${osmPanel(d.osm)}
     <h2>lane</h2>
     <div class="card">rightmost: <b>${d.lanes.rightmost === null ? "?" : d.lanes.rightmost}</b>
       &nbsp; leftmost: <b>${d.lanes.leftmost === null ? "?" : d.lanes.leftmost}</b>
