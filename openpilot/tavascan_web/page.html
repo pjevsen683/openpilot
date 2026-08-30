@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tavascan shadow</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 12px; background: #111; color: #eee;
+         font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  h2 { margin: 18px 0 6px; font-size: 13px; text-transform: uppercase;
+       letter-spacing: .08em; color: #888; font-weight: 600; }
+  .row { display: flex; gap: 10px; }
+  .card { flex: 1; background: #1c1c1c; border-radius: 10px; padding: 10px 12px; }
+  .big { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .06em; }
+  .verdict { border-radius: 10px; padding: 12px; margin-top: 6px; background: #1c1c1c; }
+  .on  { background: #4a2a12; border-left: 4px solid #ff9c3a; }
+  .off { border-left: 4px solid #333; }
+  .why { color: #bbb; font-size: 13px; margin-top: 3px; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  th { text-align: left; font-size: 11px; color: #888; font-weight: 600; padding: 3px 0; }
+  td { padding: 3px 0; border-top: 1px solid #262626; }
+  .lane-left { color: #ff9c3a; } .lane-right { color: #46b3ff; } .lane-same { color: #eee; }
+  .stale { opacity: .4; }
+  .none { color: #666; font-style: italic; }
+</style>
+</head>
+<body>
+<div id="app"><p class="none">connecting…</p></div>
+<script>
+const kph = v => v === null || v === undefined ? "–" : v.toFixed(0);
+
+function verdict(name, r) {
+  const cls = r.active ? "verdict on" : "verdict off";
+  const cap = r.active ? ` &rarr; cap ${kph(r.cap * 3.6)} km/h` : "";
+  return `<div class="${cls}"><b>${name}</b>${cap}<div class="why">${r.why}</div></div>`;
+}
+
+function objects(o) {
+  const keys = Object.keys(o);
+  if (!keys.length) return '<p class="none">no radar objects</p>';
+  const rows = keys.sort().map(k => {
+    const v = o[k], lane = k.split("_")[0];
+    return `<tr><td class="lane-${lane}">${k}</td><td>${v.d.toFixed(0)} m</td>` +
+           `<td>${v.y > 0 ? "+" : ""}${v.y.toFixed(1)} m</td>` +
+           `<td>${kph(v.v_abs * 3.6)} km/h</td></tr>`;
+  }).join("");
+  return `<table><tr><th>slot</th><th>ahead</th><th>lateral</th><th>speed</th></tr>${rows}</table>`;
+}
+
+function render(d) {
+  if (!d.ready) { document.getElementById("app").innerHTML =
+    '<p class="none">waiting for the car…</p>'; return; }
+
+  const stale = d.radar_age_s === null || d.radar_age_s > 2;
+  const delta = d.delta_kph;
+  const deltaTxt = delta === null ? "no change" : `${delta.toFixed(0)} km/h`;
+
+  document.getElementById("app").innerHTML = `
+    <div class="row">
+      <div class="card"><div class="lbl">speed</div><div class="big">${kph(d.v_ego_kph)}</div></div>
+      <div class="card"><div class="lbl">set</div><div class="big">${kph(d.v_cruise_kph)}</div></div>
+      <div class="card"><div class="lbl">would be</div>
+        <div class="big" style="color:${delta === null ? "#666" : "#ff9c3a"}">${deltaTxt}</div></div>
+    </div>
+    <h2>rules (shadow only &mdash; nothing is applied)</h2>
+    ${verdict("Undertaking guard", d.undertake)}
+    ${verdict("Merge yield", d.merge_yield)}
+    <h2>radar ${stale ? "(stale)" : ""}</h2>
+    <div class="${stale ? "stale" : ""}">${objects(d.objects)}</div>
+    <h2>lane</h2>
+    <div class="card">rightmost: <b>${d.lanes.rightmost === null ? "?" : d.lanes.rightmost}</b>
+      &nbsp; leftmost: <b>${d.lanes.leftmost === null ? "?" : d.lanes.leftmost}</b>
+      <div class="why">road edge left ${d.lanes.left_edge_m ?? "?"} m,
+        right ${d.lanes.right_edge_m ?? "?"} m &middot;
+        engaged ${d.engaged}</div></div>`;
+}
+
+async function tick() {
+  try { render(await (await fetch("/data.json", {cache: "no-store"})).json()); }
+  catch (e) { /* device dropped off wifi; keep the last frame on screen */ }
+}
+setInterval(tick, 500); tick();
+</script>
+</body>
+</html>
