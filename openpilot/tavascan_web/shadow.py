@@ -7,6 +7,13 @@ computes a would-be speed cap and a human-readable reason, and that is all.
 
 The point is to build confidence before anything is allowed to steer or brake.
 A rule earns its way into the control path by being watched here first.
+
+SIGN CONVENTION
+  Everything in this module uses y POSITIVE TO THE RIGHT, matching modelV2's
+  laneLines. The radar uses the opposite sign, so it is flipped once at
+  ingestion in main.py and never again. Measured on a motorway recording:
+  radar left-lane objects sit at y = +3.84 m and right-lane objects at
+  y = -4.61 m, while the model's leftmost lane line sits at y = -4.37 m.
 """
 from opendbc.car.common.conversions import Conversions as CV
 
@@ -16,7 +23,7 @@ from opendbc.car.common.conversions import Conversions as CV
 UT_MIN_SPEED = 70 * CV.KPH_TO_MS
 UT_MAX_RANGE = 90.0
 UT_MIN_RANGE = 3.0
-UT_LAT_MIN, UT_LAT_MAX = 2.0, 6.0     # m, plausible adjacent lane
+UT_LAT = (-6.0, -2.0)                 # m, left lane (negative is left)
 UT_SLIP = 4 * CV.KPH_TO_MS            # tolerated speed excess
 
 # --- Merge yield ------------------------------------------------------------
@@ -24,29 +31,26 @@ UT_SLIP = 4 * CV.KPH_TO_MS            # tolerated speed excess
 # from a slip road. This rule is a first sketch and is deliberately conservative.
 MG_MIN_SPEED = 60 * CV.KPH_TO_MS
 MG_MAX_RANGE = 60.0
-MG_LAT_MIN, MG_LAT_MAX = -6.0, -2.0   # m, negative is right in radar coordinates
+MG_LAT = (2.0, 6.0)                   # m, right lane
 MG_SLIP = 2 * CV.KPH_TO_MS
 
 
-def _pick(objects: dict, prefix: str, lat_min: float, lat_max: float, max_range: float):
-  """Closest object in the given lane whose lateral offset is plausible."""
+def _closest(points: list, lat: tuple, max_range: float):
+  """Closest point whose lateral offset falls inside the given lane window."""
   best = None
-  for slot in (f"{prefix}_1", f"{prefix}_2"):
-    o = objects.get(slot)
-    if o is None:
+  for p in points:
+    if not (lat[0] < p["y"] < lat[1]):
       continue
-    if not (lat_min < o["y"] < lat_max):
+    if not (UT_MIN_RANGE < p["d"] < max_range):
       continue
-    if not (UT_MIN_RANGE < o["d"] < max_range):
-      continue
-    if best is None or o["d"] < best["d"]:
-      best = o
+    if best is None or p["d"] < best["d"]:
+      best = p
   return best
 
 
-def undertake(objects: dict, v_ego: float, rightmost_lane: bool | None) -> dict:
+def undertake(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
   """Would we be undertaking a slower vehicle in the left lane?"""
-  o = _pick(objects, "left", UT_LAT_MIN, UT_LAT_MAX, UT_MAX_RANGE)
+  o = _closest(points, UT_LAT, UT_MAX_RANGE)
 
   if v_ego < UT_MIN_SPEED:
     return {"active": False, "cap": None, "why": "below 70 km/h", "target": o}
@@ -64,9 +68,9 @@ def undertake(objects: dict, v_ego: float, rightmost_lane: bool | None) -> dict:
   return {"active": True, "cap": cap, "why": why, "target": o}
 
 
-def merge_yield(objects: dict, v_ego: float) -> dict:
+def merge_yield(points: list, v_ego: float) -> dict:
   """Would we be closing on a slower vehicle to our right, likely merging?"""
-  o = _pick(objects, "right", MG_LAT_MIN, MG_LAT_MAX, MG_MAX_RANGE)
+  o = _closest(points, MG_LAT, MG_MAX_RANGE)
 
   if v_ego < MG_MIN_SPEED:
     return {"active": False, "cap": None, "why": "below 60 km/h", "target": o}

@@ -23,6 +23,7 @@ not registered in params_keys.h and Params() refuses unknown keys.
 Read-only. Nothing here writes a param.
 """
 import json
+import math
 import os
 
 MEM_PARAMS = "/dev/shm/params/d"
@@ -104,3 +105,52 @@ def maps_installed() -> dict:
   except OSError:
     n = 0
   return {"path": root, "present": n > 0, "files": n}
+
+
+# --- map geometry -----------------------------------------------------------
+# mapd publishes MapTargetVelocities as a list of {latitude, longitude, velocity}
+# points along the road ahead. Projected into the car frame it becomes an actual
+# drawable road, which is the only map data we have with real geometry.
+
+EARTH_R = 6371000.0
+
+
+def road_ahead(max_points: int = 60) -> dict:
+  """The road ahead as a polyline in the car frame: x forward, y right, metres."""
+  out = {"available": False, "points": [], "speeds": []}
+  raw = _read(os.path.join(MEM_PARAMS, "MapTargetVelocities")) or \
+        _read(os.path.join(DISK_PARAMS, "MapTargetVelocities"))
+  pos = _read(os.path.join(MEM_PARAMS, "LastGPSPosition")) or \
+        _read(os.path.join(DISK_PARAMS, "LastGPSPosition"))
+  if not raw or not pos:
+    return out
+
+  try:
+    pts = json.loads(raw)
+    here = json.loads(pos)
+    lat0 = float(here["latitude"])
+    lon0 = float(here["longitude"])
+    bearing = math.radians(float(here.get("bearing", 0.0)))
+  except (ValueError, TypeError, KeyError):
+    return out
+  if not isinstance(pts, list) or not pts:
+    return out
+
+  coslat = math.cos(math.radians(lat0))
+  cb, sb = math.cos(bearing), math.sin(bearing)
+  for p in pts[:max_points]:
+    try:
+      dn = math.radians(float(p["latitude"]) - lat0) * EARTH_R          # north, m
+      de = math.radians(float(p["longitude"]) - lon0) * EARTH_R * coslat  # east, m
+    except (ValueError, TypeError, KeyError):
+      continue
+    # Rotate the north/east offset into the car frame. Bearing is degrees
+    # clockwise from north, so ahead = north*cos + east*sin.
+    ahead = dn * cb + de * sb
+    right = -dn * sb + de * cb
+    out["points"].append([round(ahead, 1), round(right, 1)])
+    v = p.get("velocity")
+    out["speeds"].append(round(float(v) * 3.6, 0) if v is not None else None)
+
+  out["available"] = len(out["points"]) >= 2
+  return out

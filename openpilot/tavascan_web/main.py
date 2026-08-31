@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Serves a small live page showing what the shadow rules WOULD have done.
 
-Read-only by design. This process subscribes to cereal, decodes the car's radar
-and evaluates rules from tavascan_web.shadow. It never publishes to cereal, never
-writes params, never sends CAN. Nothing here can influence how the car drives.
+Read-only by design. This process subscribes to cereal and evaluates rules from
+tavascan_web.shadow against the car's radar, which opendbc already parses for
+us into radarTracks -- all six per-lane objects, no bit twiddling needed.
+
+It never publishes to cereal, writes params or sends CAN. Nothing here can
+influence how the car drives.
 
 Two ways to use it:
   * Live, at http://<device-ip>:8088/ -- intended for a passenger, not the driver.
@@ -23,7 +26,7 @@ from openpilot.cereal import messaging
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.realtime import Ratekeeper
 from opendbc.car.common.conversions import Conversions as CV
-from openpilot.tavascan_web import osm, radar, shadow
+from openpilot.tavascan_web import geometry, osm, shadow
 
 PORT = int(os.getenv("TAVASCAN_WEB_PORT", "8088"))
 TRACE = os.getenv("TAVASCAN_WEB_TRACE", "/data/tavascan_shadow.jsonl")
@@ -35,42 +38,37 @@ _lock = threading.Lock()
 
 
 def collector() -> None:
-  can_sock = messaging.sub_sock("can", timeout=20)
-  sm = messaging.SubMaster(["carState", "modelV2", "longitudinalPlan", "liveMapDataSP"])
+  sm = messaging.SubMaster(["carState", "modelV2", "radarTracks", "liveMapDataSP"])
   rk = Ratekeeper(10.0)
-  objects: dict = {}
+  points: list = []
   last_radar = 0.0
   was_active = False
   osm_view: dict = {"params": {}, "maps": osm.maps_installed()}
   osm_tick = 0
 
   while True:
-    sm.update(0)
-    v_ego = sm["carState"].vEgo if sm.updated["carState"] else 0.0
+    sm.update(50)
+    v_ego = sm["carState"].vEgo
 
-    for msg in messaging.drain_sock(can_sock):
-      for c in msg.can:
-        if c.address == radar.RADAR_ADDR and c.src == radar.RADAR_BUS:
-          decoded = radar.decode(bytes(c.dat), v_ego)
-          if decoded is not None:
-            objects = decoded
-            last_radar = time.monotonic()
-
+    if sm.updated["radarTracks"]:
+      points = geometry.radar_points(sm["radarTracks"], v_ego)
+      last_radar = time.monotonic()
     radar_age = time.monotonic() - last_radar if last_radar else None
     if radar_age is not None and radar_age > 2.0:
-      objects = {}
-
-    lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
-    ut = shadow.undertake(objects, v_ego, lanes["rightmost"])
-    mg = shadow.merge_yield(objects, v_ego)
+      points = []
 
     # The params directory is a filesystem read; once a second is plenty.
     osm_tick += 1
     if osm_tick % 10 == 1:
       osm_view = {"params": osm.read_params(), "maps": osm.maps_installed()}
     osm_view["live"] = osm.read_live(sm)
+    osm_view["road_ahead"] = osm.road_ahead()
 
-    v_cruise = sm["carState"].cruiseState.speed if sm.updated["carState"] else 0.0
+    lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
+    ut = shadow.undertake(points, v_ego, lanes["rightmost"])
+    mg = shadow.merge_yield(points, v_ego)
+
+    v_cruise = sm["carState"].cruiseState.speed
     caps = [r["cap"] for r in (ut, mg) if r["cap"] is not None]
     combined = min(caps) if caps else None
 
@@ -79,9 +77,10 @@ def collector() -> None:
       "t": round(time.time(), 1),
       "v_ego_kph": round(v_ego * CV.MS_TO_KPH, 1),
       "v_cruise_kph": round(v_cruise * CV.MS_TO_KPH, 1) if v_cruise else None,
-      "engaged": bool(sm["carState"].cruiseState.enabled) if sm.updated["carState"] else False,
+      "engaged": bool(sm["carState"].cruiseState.enabled),
       "radar_age_s": round(radar_age, 1) if radar_age is not None else None,
-      "objects": objects,
+      "points": points,
+      "scene": geometry.scene(sm["modelV2"]),
       "lanes": lanes,
       "osm": osm_view,
       "undertake": ut,

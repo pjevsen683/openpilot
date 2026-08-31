@@ -6,108 +6,177 @@
 <title>Tavascan shadow</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; padding: 12px; background: #111; color: #eee;
+  body { margin: 0; padding: 10px; background: #111; color: #eee;
          font: 15px/1.4 -apple-system, system-ui, sans-serif; }
-  h2 { margin: 18px 0 6px; font-size: 13px; text-transform: uppercase;
+  h2 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase;
        letter-spacing: .08em; color: #888; font-weight: 600; }
-  .row { display: flex; gap: 10px; }
-  .card { flex: 1; background: #1c1c1c; border-radius: 10px; padding: 10px 12px; }
-  .big { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .row { display: flex; gap: 8px; }
+  .card { flex: 1; background: #1c1c1c; border-radius: 10px; padding: 9px 11px; }
+  .big { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .06em; }
-  .verdict { border-radius: 10px; padding: 12px; margin-top: 6px; background: #1c1c1c; }
-  .on  { background: #4a2a12; border-left: 4px solid #ff9c3a; }
-  .off { border-left: 4px solid #333; }
+  .verdict { border-radius: 10px; padding: 10px 12px; margin-top: 6px; background: #1c1c1c;
+             border-left: 4px solid #333; }
+  .on { background: #4a2a12; border-left-color: #ff9c3a; }
   .why { color: #bbb; font-size: 13px; margin-top: 3px; }
+  canvas { width: 100%; display: block; background: #161616; border-radius: 10px; }
+  .legend { font-size: 11px; color: #777; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
+  .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: 1px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
   th { text-align: left; font-size: 11px; color: #888; font-weight: 600; padding: 3px 0; }
   td { padding: 3px 0; border-top: 1px solid #262626; }
-  .lane-left { color: #ff9c3a; } .lane-right { color: #46b3ff; } .lane-same { color: #eee; }
-  .stale { opacity: .4; }
   .none { color: #666; font-style: italic; }
+  label.tog { font-size: 12px; color: #aaa; margin-left: 10px; }
 </style>
 </head>
 <body>
 <div id="app"><p class="none">connecting…</p></div>
 <script>
+// ---- drawing -------------------------------------------------------------
+// One frame everywhere: x metres ahead, y metres to the RIGHT. The radar's
+// opposite sign is flipped on the device, never here.
+const VIEW_AHEAD = 140;   // metres drawn up the screen
+const VIEW_HALF  = 18;    // metres drawn either side
+let showMap = true;
+
+function draw(cv, d) {
+  const ctx = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = Math.round(w * 1.25);
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  cv.style.height = h + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+
+  const EGO_Y = h - 46;
+  const X = y => w / 2 + (y / VIEW_HALF) * (w / 2);
+  const Y = x => EGO_Y - (x / VIEW_AHEAD) * (EGO_Y - 10);
+
+  // distance rings
+  ctx.strokeStyle = "#242424"; ctx.fillStyle = "#4a4a4a";
+  ctx.font = "10px system-ui"; ctx.lineWidth = 1;
+  for (let m = 25; m <= VIEW_AHEAD; m += 25) {
+    ctx.beginPath(); ctx.moveTo(0, Y(m)); ctx.lineTo(w, Y(m)); ctx.stroke();
+    ctx.fillText(m + " m", 4, Y(m) - 3);
+  }
+
+  const poly = (pts, style, width, dash) => {
+    if (!pts || pts.length < 2) return;
+    ctx.save(); ctx.strokeStyle = style; ctx.lineWidth = width;
+    ctx.setLineDash(dash || []); ctx.beginPath();
+    pts.forEach(([x, y], i) => i ? ctx.lineTo(X(y), Y(x)) : ctx.moveTo(X(y), Y(x)));
+    ctx.stroke(); ctx.restore();
+  };
+
+  const sc = d.scene || {};
+  // map layer underneath, so the model always reads on top of it
+  if (showMap && d.osm && d.osm.road_ahead && d.osm.road_ahead.available)
+    poly(d.osm.road_ahead.points, "#2b6cb0", 9, null);
+
+  (sc.road_edges || []).forEach(e => e && poly(e.points, "#6b4a2a", 3));
+  (sc.lane_lines || []).forEach(l => {
+    if (!l) return;
+    poly(l.points, l.confident ? "#d8d8d8" : "#4a4a4a", l.confident ? 2.5 : 1.5,
+         l.confident ? [] : [5, 5]);
+  });
+
+  // radar objects
+  const tgt = [d.undertake, d.merge_yield].filter(r => r.active && r.target)
+                                          .map(r => r.target.id);
+  (d.points || []).forEach(p => {
+    if (p.d > VIEW_AHEAD || Math.abs(p.y) > VIEW_HALF) return;
+    const hit = tgt.includes(p.id);
+    const cx = X(p.y), cy = Y(p.d);
+    const bw = Math.max(9, (1.8 / VIEW_HALF) * (w / 2)), bh = bw * 1.9;
+    ctx.fillStyle = hit ? "#ff9c3a" : "#46b3ff";
+    ctx.fillRect(cx - bw / 2, cy - bh / 2, bw, bh);
+    ctx.fillStyle = "#eee"; ctx.font = "11px system-ui";
+    ctx.fillText(`${(p.v_abs * 3.6).toFixed(0)}`, cx + bw / 2 + 3, cy + 4);
+  });
+
+  // ego
+  ctx.fillStyle = "#3ddc84";
+  ctx.fillRect(X(0) - 9, EGO_Y - 17, 18, 34);
+}
+
+// ---- panels --------------------------------------------------------------
 const kph = v => v === null || v === undefined ? "–" : v.toFixed(0);
 
 function verdict(name, r) {
-  const cls = r.active ? "verdict on" : "verdict off";
   const cap = r.active ? ` &rarr; cap ${kph(r.cap * 3.6)} km/h` : "";
-  return `<div class="${cls}"><b>${name}</b>${cap}<div class="why">${r.why}</div></div>`;
-}
-
-function objects(o) {
-  const keys = Object.keys(o);
-  if (!keys.length) return '<p class="none">no radar objects</p>';
-  const rows = keys.sort().map(k => {
-    const v = o[k], lane = k.split("_")[0];
-    return `<tr><td class="lane-${lane}">${k}</td><td>${v.d.toFixed(0)} m</td>` +
-           `<td>${v.y > 0 ? "+" : ""}${v.y.toFixed(1)} m</td>` +
-           `<td>${kph(v.v_abs * 3.6)} km/h</td></tr>`;
-  }).join("");
-  return `<table><tr><th>slot</th><th>ahead</th><th>lateral</th><th>speed</th></tr>${rows}</table>`;
+  return `<div class="verdict ${r.active ? "on" : ""}"><b>${name}</b>${cap}
+            <div class="why">${r.why}</div></div>`;
 }
 
 function osmPanel(o) {
   if (!o) return '<p class="none">no map layer</p>';
-  const L = o.live || {};
-  const maps = o.maps || {};
+  const L = o.live || {}, maps = o.maps || {}, ra = o.road_ahead || {};
   const head = `<div class="card">
-      <div>speed limit <b>${L.speed_limit_kph ?? "–"}</b> km/h
+      <div>limit <b>${L.speed_limit_kph ?? "–"}</b> km/h
         &nbsp; ahead <b>${L.ahead_kph ?? "–"}</b> km/h
         ${L.ahead_distance_m != null ? `in ${L.ahead_distance_m.toFixed(0)} m` : ""}</div>
       <div class="why">${L.road_name ?? "no road name"} &middot;
-        offline maps: ${maps.present ? maps.files + " files" : "NONE DOWNLOADED"}</div></div>`;
-
+        offline maps: ${maps.present ? maps.files + " files" : "NONE DOWNLOADED"} &middot;
+        road geometry: ${ra.available ? ra.points.length + " points" : "none"}</div></div>`;
   const keys = Object.keys(o.params || {}).sort();
   if (!keys.length) return head + '<p class="none">mapd publishes no params right now</p>';
   const rows = keys.map(k => {
     let v = o.params[k];
-    if (v && v._list) v = `${v.count} points, first ${JSON.stringify(v.first)}`;
+    if (v && v._list) v = `${v.count} points`;
     else if (v && v._truncated) v = `${v.bytes} bytes`;
     else v = JSON.stringify(v);
-    if (v.length > 90) v = v.slice(0, 90) + "…";
+    if (v.length > 80) v = v.slice(0, 80) + "…";
     return `<tr><td>${k}</td><td>${v}</td></tr>`;
   }).join("");
   return head + `<table><tr><th>param</th><th>value</th></tr>${rows}</table>`;
 }
 
 function render(d) {
-  if (!d.ready) { document.getElementById("app").innerHTML =
-    '<p class="none">waiting for the car…</p>'; return; }
-
-  const stale = d.radar_age_s === null || d.radar_age_s > 2;
+  const app = document.getElementById("app");
+  if (!d.ready) { app.innerHTML = '<p class="none">waiting for the car…</p>'; return; }
   const delta = d.delta_kph;
-  const deltaTxt = delta === null ? "no change" : `${delta.toFixed(0)} km/h`;
 
-  document.getElementById("app").innerHTML = `
-    <div class="row">
-      <div class="card"><div class="lbl">speed</div><div class="big">${kph(d.v_ego_kph)}</div></div>
-      <div class="card"><div class="lbl">set</div><div class="big">${kph(d.v_cruise_kph)}</div></div>
-      <div class="card"><div class="lbl">would be</div>
-        <div class="big" style="color:${delta === null ? "#666" : "#ff9c3a"}">${deltaTxt}</div></div>
-    </div>
-    <h2>rules (shadow only &mdash; nothing is applied)</h2>
-    ${verdict("Undertaking guard", d.undertake)}
-    ${verdict("Merge yield", d.merge_yield)}
-    <h2>radar ${stale ? "(stale)" : ""}</h2>
-    <div class="${stale ? "stale" : ""}">${objects(d.objects)}</div>
-    <h2>map layer (discovery &mdash; what mapd actually gives us)</h2>
-    ${osmPanel(d.osm)}
-    <h2>lane</h2>
-    <div class="card">rightmost: <b>${d.lanes.rightmost === null ? "?" : d.lanes.rightmost}</b>
-      &nbsp; leftmost: <b>${d.lanes.leftmost === null ? "?" : d.lanes.leftmost}</b>
-      <div class="why">road edge left ${d.lanes.left_edge_m ?? "?"} m,
-        right ${d.lanes.right_edge_m ?? "?"} m &middot;
-        engaged ${d.engaged}</div></div>`;
+  if (!document.getElementById("bev")) {
+    app.innerHTML = `
+      <div class="row" id="nums"></div>
+      <h2>bird's eye <label class="tog"><input type="checkbox" id="mapchk" checked> map layer</label></h2>
+      <canvas id="bev"></canvas>
+      <div class="legend">
+        <span><i class="sw" style="background:#3ddc84"></i> us</span>
+        <span><i class="sw" style="background:#46b3ff"></i> radar object</span>
+        <span><i class="sw" style="background:#ff9c3a"></i> rule target</span>
+        <span><i class="sw" style="background:#d8d8d8"></i> lane line</span>
+        <span><i class="sw" style="background:#6b4a2a"></i> road edge</span>
+        <span><i class="sw" style="background:#2b6cb0"></i> map road</span>
+      </div>
+      <h2>rules (shadow only &mdash; nothing is applied)</h2><div id="rules"></div>
+      <h2>map layer</h2><div id="osm"></div>
+      <h2>lane</h2><div id="lane"></div>`;
+    document.getElementById("mapchk").onchange = e => { showMap = e.target.checked; };
+  }
+
+  document.getElementById("nums").innerHTML = `
+    <div class="card"><div class="lbl">speed</div><div class="big">${kph(d.v_ego_kph)}</div></div>
+    <div class="card"><div class="lbl">set</div><div class="big">${kph(d.v_cruise_kph)}</div></div>
+    <div class="card"><div class="lbl">would be</div>
+      <div class="big" style="color:${delta === null ? "#666" : "#ff9c3a"}">
+        ${delta === null ? "no change" : delta.toFixed(0) + " km/h"}</div></div>`;
+  document.getElementById("rules").innerHTML =
+    verdict("Undertaking guard", d.undertake) + verdict("Merge yield", d.merge_yield);
+  document.getElementById("osm").innerHTML = osmPanel(d.osm);
+  const L = d.lanes;
+  document.getElementById("lane").innerHTML = `<div class="card">
+      rightmost: <b>${L.rightmost ?? "?"}</b> &nbsp; leftmost: <b>${L.leftmost ?? "?"}</b>
+      <div class="why">road edge left ${L.left_edge_m ?? "?"} m, right ${L.right_edge_m ?? "?"} m
+        &middot; radar ${d.radar_age_s ?? "?"} s old &middot; engaged ${d.engaged}</div></div>`;
+
+  draw(document.getElementById("bev"), d);
 }
 
 async function tick() {
   try { render(await (await fetch("/data.json", {cache: "no-store"})).json()); }
   catch (e) { /* device dropped off wifi; keep the last frame on screen */ }
 }
-setInterval(tick, 500); tick();
+setInterval(tick, 400); tick();
 </script>
 </body>
 </html>
