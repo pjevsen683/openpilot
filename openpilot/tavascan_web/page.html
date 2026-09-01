@@ -36,6 +36,16 @@
 // ---- drawing -------------------------------------------------------------
 // One frame everywhere: x metres ahead, y metres to the RIGHT. The radar's
 // opposite sign is flipped on the device, never here.
+//
+// The origin is our FRONT BUMPER, not the middle of the car, because that is
+// what dRel is measured from: opendbc subtracts DREL_FRONT_EDGE_MARGIN (1.5 m)
+// on top of the DBC offset to approximate the gap to the rear of the object.
+// So our body is drawn backwards from the origin and every other car is drawn
+// forwards from its own reading, leaving exactly dRel of empty road between
+// them. Drawing either one centred, as this did at first, made a car at 0 m
+// sit on top of our icon.
+const CAR_L = 4.6;        // metres, drawn to scale
+const CAR_W = 1.85;
 // A lane is ~3.7 m wide. At +/-18 m the ego lane lines landed 20 px from centre
 // while the car icon itself is 18 px wide, so the road collapsed onto the car and
 // read as decoration. +/-8 m puts them at 45 px, which reads as a lane.
@@ -52,7 +62,7 @@ function draw(cv, d) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const EGO_Y = h - 46;
+  const EGO_Y = h - 62;   // leaves room for our own body below the origin
   const X = y => w / 2 + (y / viewHalf) * (w / 2);
   const Y = x => EGO_Y - (x / viewAhead) * (EGO_Y - 10);
 
@@ -91,17 +101,21 @@ function draw(cv, d) {
   (d.points || []).forEach(p => {
     if (p.d > viewAhead || Math.abs(p.y) > viewHalf) return;
     const hit = tgt.includes(p.id);
-    const cx = X(p.y), cy = Y(p.d);
-    const bw = Math.max(9, (1.8 / viewHalf) * (w / 2)), bh = bw * 1.9;
+    const cx = X(p.y), rear = Y(p.d);
+    const bw = Math.max(7, (CAR_W / viewHalf) * (w / 2));
+    const bh = Math.max(10, Y(0) - Y(CAR_L));
     ctx.fillStyle = hit ? "#ff9c3a" : "#46b3ff";
-    ctx.fillRect(cx - bw / 2, cy - bh / 2, bw, bh);
+    // rear edge sits on the reading; the body extends away from us
+    ctx.fillRect(cx - bw / 2, rear - bh, bw, bh);
     ctx.fillStyle = "#eee"; ctx.font = "11px system-ui";
-    ctx.fillText(`${(p.v_abs * 3.6).toFixed(0)}`, cx + bw / 2 + 3, cy + 4);
+    ctx.fillText(`${(p.v_abs * 3.6).toFixed(0)}`, cx + bw / 2 + 3, rear - 2);
   });
 
-  // ego
+  // ego: front bumper on the origin, body drawn backwards
+  const ew = Math.max(7, (CAR_W / viewHalf) * (w / 2));
+  const eh = Math.max(10, Y(0) - Y(CAR_L));
   ctx.fillStyle = "#3ddc84";
-  ctx.fillRect(X(0) - 9, EGO_Y - 17, 18, 34);
+  ctx.fillRect(X(0) - ew / 2, EGO_Y, ew, eh);
 }
 
 // ---- panels --------------------------------------------------------------
