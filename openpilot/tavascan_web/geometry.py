@@ -22,8 +22,11 @@ LANE_PROB = 0.35
 
 def _line(entry, prob=None) -> dict | None:
   try:
-    xs, ys = entry.x, entry.y
-  except AttributeError:
+    # list() first: these are capnp _DynamicListReader, which supports simple
+    # indexing but raises TypeError on extended slicing. Slicing the reader
+    # directly is what silently emptied every scene on the first drive.
+    xs, ys = list(entry.x), list(entry.y)
+  except (AttributeError, TypeError):
     return None
   pts = [[round(x, 1), round(y, 2)] for x, y in zip(xs[::STRIDE], ys[::STRIDE]) if x <= MAX_X]
   if len(pts) < 2:

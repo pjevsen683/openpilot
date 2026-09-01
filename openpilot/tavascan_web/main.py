@@ -33,6 +33,9 @@ TRACE_MAX_BYTES = 8 * 1024 * 1024
 # fired -- and then there is nothing to review afterwards. A slow heartbeat means
 # every drive leaves a record of what the model and radar actually saw.
 HEARTBEAT_S = 10.0
+# While a rule is engaged, 10 Hz is far more detail than reviewing needs and it
+# fills the cap in minutes. 2 Hz still shows how an engagement developed.
+ACTIVE_PERIOD_S = 0.5
 PAGE = os.path.join(os.path.dirname(__file__), "page.html")
 
 _snapshot: dict = {"ready": False}
@@ -99,15 +102,40 @@ def collector() -> None:
 
     active = ut["active"] or mg["active"]
     now = time.monotonic()
-    if active or was_active:
-      append_trace(snap)
-      last_beat = now
-    elif now - last_beat >= HEARTBEAT_S:
+    period = ACTIVE_PERIOD_S if (active or was_active) else HEARTBEAT_S
+    if now - last_beat >= period:
       append_trace(snap)
       last_beat = now
     was_active = active
 
     rk.keep_time()
+
+
+def trace_record(snap: dict) -> dict:
+  """A slimmed copy for the trace.
+
+  The full snapshot is ~4 kB, mostly the mapd param dump and the scene
+  polylines, and it filled the 8 MB cap on the first day. What matters
+  afterwards is the verdict and the geometry that produced it, so the params
+  go and the lane lines keep their probabilities but not their points.
+  """
+  sc = snap.get("scene") or {}
+  osm_live = (snap.get("osm") or {}).get("live") or {}
+  return {
+    "t": snap.get("t"),
+    "v_ego_kph": snap.get("v_ego_kph"),
+    "v_cruise_kph": snap.get("v_cruise_kph"),
+    "engaged": snap.get("engaged"),
+    "delta_kph": snap.get("delta_kph"),
+    "undertake": snap.get("undertake"),
+    "merge_yield": snap.get("merge_yield"),
+    "points": snap.get("points"),
+    "lanes": snap.get("lanes"),
+    "lane_probs": [l["prob"] if l else None for l in (sc.get("lane_lines") or [])],
+    "road": osm_live.get("road_name"),
+    "limit_kph": osm_live.get("speed_limit_kph"),
+    "radar_age_s": snap.get("radar_age_s"),
+  }
 
 
 def append_trace(snap: dict) -> None:
@@ -116,7 +144,7 @@ def append_trace(snap: dict) -> None:
     if os.path.exists(TRACE) and os.path.getsize(TRACE) > TRACE_MAX_BYTES:
       return
     with open(TRACE, "a") as f:
-      f.write(json.dumps(snap) + "\n")
+      f.write(json.dumps(trace_record(snap)) + "\n")
   except OSError:
     pass
 
