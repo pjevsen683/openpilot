@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Tavascan parked</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 14px; background: #111; color: #eee;
+         font: 15px/1.4 -apple-system, system-ui, sans-serif; }
+  h2 { margin: 20px 0 6px; font-size: 12px; text-transform: uppercase;
+       letter-spacing: .08em; color: #888; font-weight: 600; }
+  .hero { background: #1c1c1c; border-radius: 14px; padding: 16px; }
+  .soc { font-size: 56px; font-weight: 650; font-variant-numeric: tabular-nums;
+         line-height: 1; }
+  .bar { height: 10px; border-radius: 5px; background: #2a2a2a; margin: 12px 0 6px;
+         overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: #3ddc84; }
+  .bar.chg > i { background: #46b3ff; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .card { flex: 1 1 30%; background: #1c1c1c; border-radius: 10px; padding: 10px 12px; }
+  .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .06em; }
+  .val { font-size: 21px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .why { color: #999; font-size: 13px; margin-top: 4px; }
+  .pill { display: inline-block; padding: 2px 9px; border-radius: 999px;
+          font-size: 12px; font-weight: 600; }
+  .ok { background: #17361f; color: #6ee79b; }
+  .warn { background: #4a2a12; color: #ff9c3a; }
+  .dim { background: #262626; color: #999; }
+  .none { color: #666; font-style: italic; }
+  canvas { width: 100%; height: 90px; display: block; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div id="app"><p class="none">connecting…</p></div>
+<script>
+const n = (v, d) => v === null || v === undefined ? "–" : v.toFixed(d ?? 0);
+
+function ago(s) {
+  if (s === null || s === undefined) return "unknown";
+  if (s < 90) return `${Math.round(s)} s ago`;
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  return `${(s / 3600).toFixed(1)} h ago`;
+}
+
+function spark(cv, hist) {
+  const ctx = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = 90;
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  if (!hist || hist.length < 2) return;
+
+  const ts = hist.map(p => p[0]), vs = hist.map(p => p[1]);
+  const t0 = ts[0], t1 = ts[ts.length - 1];
+  const lo = Math.min(...vs) - 0.5, hi = Math.max(...vs) + 0.5;
+  const X = t => t1 === t0 ? w : ((t - t0) / (t1 - t0)) * (w - 2) + 1;
+  const Y = v => h - 8 - ((v - lo) / (hi - lo)) * (h - 20);
+
+  ctx.strokeStyle = "#3ddc84"; ctx.lineWidth = 2; ctx.beginPath();
+  hist.forEach(([t, v], i) => i ? ctx.lineTo(X(t), Y(v)) : ctx.moveTo(X(t), Y(v)));
+  ctx.stroke();
+  ctx.fillStyle = "#666"; ctx.font = "10px system-ui";
+  ctx.fillText(`${vs[0].toFixed(0)}%`, 2, 10);
+  ctx.fillText(`${vs[vs.length - 1].toFixed(0)}%`, w - 28, 10);
+}
+
+function render(d) {
+  const app = document.getElementById("app");
+  if (!d.ready) {
+    app.innerHTML = '<p class="none">no reading yet &mdash; tavascan_soc has not written state</p>';
+    return;
+  }
+  const s = d.state, c = d.charge;
+  const soc = s.soc_pct;
+  const chg = c.charging === true;
+  const fresh = s.fresh;
+
+  const doors = s.any_door_open;
+  const locked = s.locked;
+
+  app.innerHTML = `
+    <div class="hero">
+      <div class="row" style="align-items:baseline">
+        <div class="soc">${n(soc)}<span style="font-size:24px">%</span></div>
+        <div style="flex:1;text-align:right">
+          <span class="pill ${chg ? "ok" : "dim"}">${chg ? "charging" : "parked"}</span>
+        </div>
+      </div>
+      <div class="bar ${chg ? "chg" : ""}"><i style="width:${Math.max(0, Math.min(100, soc ?? 0))}%"></i></div>
+      <div class="why">
+        ${c.rate_pct_h !== null ? `${c.rate_pct_h > 0 ? "+" : ""}${c.rate_pct_h} %/h over the last ${Math.round(c.window_s / 60)} min &middot; ` : ""}
+        CAN ${fresh ? "awake" : "asleep"}, last reading ${ago(s.age_s)}
+      </div>
+      <canvas id="spark"></canvas>
+    </div>
+
+    <h2>car</h2>
+    <div class="row">
+      <div class="card"><div class="lbl">odometer</div>
+        <div class="val">${s.odometer_km ? s.odometer_km.toLocaleString() : "–"}<span style="font-size:13px"> km</span></div></div>
+      <div class="card"><div class="lbl">12V battery</div>
+        <div class="val">${n(s.volt12, 2)}<span style="font-size:13px"> V</span></div></div>
+      <div class="card"><div class="lbl">climate</div>
+        <div class="val">${n(s.climate_w)}<span style="font-size:13px"> W</span></div></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div class="card"><div class="lbl">locked</div>
+        <div class="val"><span class="pill ${locked === true ? "ok" : locked === false ? "warn" : "dim"}">
+          ${locked === true ? "locked" : locked === false ? "UNLOCKED" : "unknown"}</span></div></div>
+      <div class="card"><div class="lbl">doors</div>
+        <div class="val"><span class="pill ${doors === false ? "ok" : doors === true ? "warn" : "dim"}">
+          ${doors === true ? "OPEN" : doors === false ? "closed" : "unknown"}</span></div></div>
+      <div class="card"><div class="lbl">raw counter</div>
+        <div class="val">${s.raw ?? "–"}</div></div>
+    </div>
+
+    <h2>where</h2>
+    <div class="card">${d.position
+      ? `${d.position.latitude.toFixed(5)}, ${d.position.longitude.toFixed(5)}
+         <div class="why"><a style="color:#46b3ff" target="_blank"
+           href="https://www.openstreetmap.org/?mlat=${d.position.latitude}&mlon=${d.position.longitude}#map=17/${d.position.latitude}/${d.position.longitude}">open map</a></div>`
+      : '<span class="none">no position</span>'}</div>
+    <div class="why" style="margin-top:10px">page data ${ago(d.file_age_s)}</div>`;
+
+  spark(document.getElementById("spark"), d.history);
+}
+
+async function tick() {
+  try { render(await (await fetch("/data.json", {cache: "no-store"})).json()); }
+  catch (e) { /* device asleep or off wifi; keep the last frame on screen */ }
+}
+setInterval(tick, 5000); tick();
+</script>
+</body>
+</html>

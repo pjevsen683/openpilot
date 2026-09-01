@@ -50,6 +50,13 @@ SAMPLE_S = float(os.getenv("TAVASCAN_SAMPLE_S", "6"))
 SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.064640"))
 SOC_B = float(os.getenv("TAVASCAN_SOC_B", "7.53"))
 
+# The same state is also written here every cycle, so the offroad web page can
+# show the car without sampling CAN a second time -- and so the last reading
+# survives the broker being unreachable.
+STATE_PATH = os.getenv("TAVASCAN_STATE_PATH", "/data/tavascan_state.json")
+# Enough SoC history to tell charging from standing still, at one point a minute.
+HISTORY_MAX = 240
+
 TOPIC = "tavascan/soc"
 STATE_TOPIC = TOPIC + "/state"
 AVAIL_TOPIC = TOPIC + "/availability"
@@ -121,6 +128,17 @@ def discovery_messages() -> list[tuple[str, str]]:
   return msgs
 
 
+def write_state(state: dict, history: list) -> None:
+  """Writes the latest state atomically so a reader never sees half a file."""
+  try:
+    tmp = STATE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+      json.dump({"state": state, "history": history}, f)
+    os.replace(tmp, STATE_PATH)
+  except OSError:
+    pass
+
+
 def sample(sock, duration: float) -> tuple[bool, dict]:
   """Returns (bus_was_awake, decoded_signals)."""
   frames: dict[int, list[bytes]] = {a: [] for a in signals.WANTED_ADDRS}
@@ -141,6 +159,7 @@ def main() -> None:
   sm = messaging.SubMaster(["pandaStates"])
   discovery_sent = False
   latest: dict = {}
+  history: list = []
   last_ts: float | None = None
   rk = Ratekeeper(1.0 / INTERVAL_S)
 
@@ -177,6 +196,11 @@ def main() -> None:
       "age_s": int(time.time() - last_ts) if last_ts else None,
       "fresh": bool(decoded),
     }
+
+    if state["soc_pct"] is not None:
+      history.append([int(time.time()), state["soc_pct"]])
+      del history[:-HISTORY_MAX]
+    write_state(state, history)
 
     msgs = []
     if not discovery_sent:
