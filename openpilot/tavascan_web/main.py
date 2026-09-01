@@ -29,6 +29,10 @@ from openpilot.tavascan_web import geometry, osm, server, shadow
 PORT = int(os.getenv("TAVASCAN_WEB_PORT", "8088"))
 TRACE = os.getenv("TAVASCAN_WEB_TRACE", "/data/tavascan_shadow.jsonl")
 TRACE_MAX_BYTES = 8 * 1024 * 1024
+# A rule engaging is rare, so the trace would be empty on a drive where nothing
+# fired -- and then there is nothing to review afterwards. A slow heartbeat means
+# every drive leaves a record of what the model and radar actually saw.
+HEARTBEAT_S = 10.0
 PAGE = os.path.join(os.path.dirname(__file__), "page.html")
 
 _snapshot: dict = {"ready": False}
@@ -43,6 +47,7 @@ def collector() -> None:
   was_active = False
   osm_view: dict = {"params": {}, "maps": osm.maps_installed()}
   osm_tick = 0
+  last_beat = 0.0
 
   while True:
     sm.update(50)
@@ -93,8 +98,13 @@ def collector() -> None:
       _snapshot.update(snap)
 
     active = ut["active"] or mg["active"]
+    now = time.monotonic()
     if active or was_active:
       append_trace(snap)
+      last_beat = now
+    elif now - last_beat >= HEARTBEAT_S:
+      append_trace(snap)
+      last_beat = now
     was_active = active
 
     rk.keep_time()

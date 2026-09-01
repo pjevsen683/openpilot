@@ -19,6 +19,8 @@
   .on { background: #4a2a12; border-left-color: #ff9c3a; }
   .why { color: #bbb; font-size: 13px; margin-top: 3px; }
   canvas { width: 100%; display: block; background: #161616; border-radius: 10px; }
+  button.zb { background:#262626; color:#ccc; border:0; border-radius:5px;
+              padding:2px 7px; margin-left:3px; font-size:11px; }
   .legend { font-size: 11px; color: #777; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
   .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: 1px; }
   table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -34,8 +36,11 @@
 // ---- drawing -------------------------------------------------------------
 // One frame everywhere: x metres ahead, y metres to the RIGHT. The radar's
 // opposite sign is flipped on the device, never here.
-const VIEW_AHEAD = 140;   // metres drawn up the screen
-const VIEW_HALF  = 18;    // metres drawn either side
+// A lane is ~3.7 m wide. At +/-18 m the ego lane lines landed 20 px from centre
+// while the car icon itself is 18 px wide, so the road collapsed onto the car and
+// read as decoration. +/-8 m puts them at 45 px, which reads as a lane.
+let viewHalf  = 8;        // metres drawn either side
+let viewAhead = 140;      // metres drawn up the screen
 let showMap = true;
 
 function draw(cv, d) {
@@ -48,13 +53,14 @@ function draw(cv, d) {
   ctx.clearRect(0, 0, w, h);
 
   const EGO_Y = h - 46;
-  const X = y => w / 2 + (y / VIEW_HALF) * (w / 2);
-  const Y = x => EGO_Y - (x / VIEW_AHEAD) * (EGO_Y - 10);
+  const X = y => w / 2 + (y / viewHalf) * (w / 2);
+  const Y = x => EGO_Y - (x / viewAhead) * (EGO_Y - 10);
 
   // distance rings
   ctx.strokeStyle = "#242424"; ctx.fillStyle = "#4a4a4a";
   ctx.font = "10px system-ui"; ctx.lineWidth = 1;
-  for (let m = 25; m <= VIEW_AHEAD; m += 25) {
+  const step = viewAhead <= 60 ? 10 : 25;
+  for (let m = step; m <= viewAhead; m += step) {
     ctx.beginPath(); ctx.moveTo(0, Y(m)); ctx.lineTo(w, Y(m)); ctx.stroke();
     ctx.fillText(m + " m", 4, Y(m) - 3);
   }
@@ -83,10 +89,10 @@ function draw(cv, d) {
   const tgt = [d.undertake, d.merge_yield].filter(r => r.active && r.target)
                                           .map(r => r.target.id);
   (d.points || []).forEach(p => {
-    if (p.d > VIEW_AHEAD || Math.abs(p.y) > VIEW_HALF) return;
+    if (p.d > viewAhead || Math.abs(p.y) > viewHalf) return;
     const hit = tgt.includes(p.id);
     const cx = X(p.y), cy = Y(p.d);
-    const bw = Math.max(9, (1.8 / VIEW_HALF) * (w / 2)), bh = bw * 1.9;
+    const bw = Math.max(9, (1.8 / viewHalf) * (w / 2)), bh = bw * 1.9;
     ctx.fillStyle = hit ? "#ff9c3a" : "#46b3ff";
     ctx.fillRect(cx - bw / 2, cy - bh / 2, bw, bh);
     ctx.fillStyle = "#eee"; ctx.font = "11px system-ui";
@@ -138,8 +144,13 @@ function render(d) {
   if (!document.getElementById("bev")) {
     app.innerHTML = `
       <div class="row" id="nums"></div>
-      <h2>bird's eye <label class="tog"><input type="checkbox" id="mapchk" checked> map layer</label></h2>
+      <h2>bird's eye
+        <label class="tog"><input type="checkbox" id="mapchk" checked> map</label>
+        <span class="tog">width <button class="zb" data-w="4">4</button><button class="zb" data-w="8">8</button><button class="zb" data-w="16">16</button> m</span>
+        <span class="tog">ahead <button class="zb" data-a="60">60</button><button class="zb" data-a="140">140</button> m</span>
+      </h2>
       <canvas id="bev"></canvas>
+      <div class="legend" id="diag"></div>
       <div class="legend">
         <span><i class="sw" style="background:#3ddc84"></i> us</span>
         <span><i class="sw" style="background:#46b3ff"></i> radar object</span>
@@ -152,6 +163,10 @@ function render(d) {
       <h2>map layer</h2><div id="osm"></div>
       <h2>lane</h2><div id="lane"></div>`;
     document.getElementById("mapchk").onchange = e => { showMap = e.target.checked; };
+    document.querySelectorAll(".zb").forEach(b => b.onclick = () => {
+      if (b.dataset.w) viewHalf = +b.dataset.w;
+      if (b.dataset.a) viewAhead = +b.dataset.a;
+    });
   }
 
   document.getElementById("nums").innerHTML = `
@@ -168,6 +183,12 @@ function render(d) {
       rightmost: <b>${L.rightmost ?? "?"}</b> &nbsp; leftmost: <b>${L.leftmost ?? "?"}</b>
       <div class="why">road edge left ${L.left_edge_m ?? "?"} m, right ${L.right_edge_m ?? "?"} m
         &middot; radar ${d.radar_age_s ?? "?"} s old &middot; engaged ${d.engaged}</div></div>`;
+
+  const sc = d.scene || {};
+  const lls = (sc.lane_lines || []).map(l => l ? `${l.prob}${l.confident ? "" : "?"}` : "–").join(" ");
+  document.getElementById("diag").innerHTML =
+    `lane lines: ${lls || "none received"} &middot; edges: ${(sc.road_edges || []).filter(Boolean).length}` +
+    ` &middot; radar objects: ${(d.points || []).length}`;
 
   draw(document.getElementById("bev"), d);
 }
