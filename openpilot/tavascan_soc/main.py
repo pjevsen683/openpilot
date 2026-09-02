@@ -62,6 +62,13 @@ STATE_TOPIC = TOPIC + "/state"
 AVAIL_TOPIC = TOPIC + "/availability"
 DEV_ID = "tavascan_soc"
 
+# The car is only reachable while the device is awake, which is a small part of
+# the day. Retained messages would otherwise leave Home Assistant showing the
+# last reading as current indefinitely. expire_after makes the entities go
+# unavailable instead, which is the honest answer -- the history is kept either
+# way. Generous enough to survive a missed cycle or two.
+EXPIRE_AFTER_S = 1800
+
 DEVICE = {
   "identifiers": [DEV_ID],
   "name": "Cupra Tavascan",
@@ -107,6 +114,7 @@ def discovery_messages() -> list[tuple[str, str]]:
       cfg["device_class"] = dclass
     if sclass:
       cfg["state_class"] = sclass
+    cfg["expire_after"] = EXPIRE_AFTER_S
     msgs.append((f"homeassistant/sensor/{DEV_ID}_{key}/config", json.dumps(cfg)))
 
   for key, name, field, dclass in BINARY_SENSORS:
@@ -124,6 +132,7 @@ def discovery_messages() -> list[tuple[str, str]]:
     }
     if dclass:
       cfg["device_class"] = dclass
+    cfg["expire_after"] = EXPIRE_AFTER_S
     msgs.append((f"homeassistant/binary_sensor/{DEV_ID}_{key}/config", json.dumps(cfg)))
   return msgs
 
@@ -195,6 +204,11 @@ def main() -> None:
       "volt12": volt,
       "age_s": int(time.time() - last_ts) if last_ts else None,
       "fresh": bool(decoded),
+      # Every message is retained, so a subscriber that connects hours later is
+      # handed this payload as if it had just arrived -- and age_s, being the age
+      # at publication, still reads 0. Without an absolute stamp there is no way
+      # to tell a live reading from a stored one. This is that stamp.
+      "ts": int(time.time()),
     }
 
     if state["soc_pct"] is not None:
