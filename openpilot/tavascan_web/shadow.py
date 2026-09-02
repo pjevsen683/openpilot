@@ -27,8 +27,16 @@ UT_LAT = (-6.0, -2.0)                 # m, left lane (negative is left)
 UT_SLIP = 4 * CV.KPH_TO_MS            # tolerated speed excess
 
 # --- Merge yield ------------------------------------------------------------
-# A vehicle on the right that is slower than us and close is most likely joining
-# from a slip road. This rule is a first sketch and is deliberately conservative.
+# A vehicle on the right that is slower than us is only interesting when there
+# is no lane to our right -- then it is on a slip road or hard shoulder rather
+# than simply being overtaken lawfully.
+#
+# Measured on a day of driving before this condition existed: the rule fired 413
+# times, 364 of them while we were NOT rightmost, i.e. while lawfully passing
+# someone in the right-hand lane. 94 of the 96 heaviest interventions were in
+# that state, the worst asking for 69 km/h off while overtaking a car exiting at
+# 53 km/h. Requiring rightmost removes 88 % of the firings and 98 % of the
+# heavy ones.
 MG_MIN_SPEED = 60 * CV.KPH_TO_MS
 MG_MAX_RANGE = 60.0
 MG_LAT = (2.0, 6.0)                   # m, right lane
@@ -59,19 +67,27 @@ def undertake(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
   if o["v_abs"] + UT_SLIP >= v_ego:
     return {"active": False, "cap": None, "why": "left lane is not slower", "target": o}
 
+  # Undertaking only applies when we are in a lane to its right. Being able to
+  # see a lane further right means the slower car is not the one we would be
+  # passing on the inside. Unknown is allowed through: a left-lane object
+  # already implies a lane to our left.
+  if rightmost_lane is False:
+    return {"active": False, "cap": None,
+            "why": "left lane is slower, but there is a lane to our right", "target": o}
+
   cap = max(o["v_abs"] + UT_SLIP, UT_MIN_SPEED)
   why = f"left lane {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m"
-  # Undertaking only applies when we are actually in a lane to its right. We
-  # cannot always tell, so this is reported rather than used to suppress.
-  if rightmost_lane is False:
-    why += " (but we do not appear to be rightmost)"
   return {"active": True, "cap": cap, "why": why, "target": o}
 
 
-def merge_yield(points: list, v_ego: float) -> dict:
+def merge_yield(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
   """Would we be closing on a slower vehicle to our right, likely merging?"""
   o = _closest(points, MG_LAT, MG_MAX_RANGE)
 
+  # Unknown counts as no. Without knowing we are rightmost, a vehicle on the
+  # right is most likely one we are lawfully passing.
+  if rightmost_lane is not True:
+    return {"active": False, "cap": None, "why": "not in the rightmost lane", "target": o}
   if v_ego < MG_MIN_SPEED:
     return {"active": False, "cap": None, "why": "below 60 km/h", "target": o}
   if o is None:

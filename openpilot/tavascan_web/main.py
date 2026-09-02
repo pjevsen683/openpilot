@@ -72,7 +72,7 @@ def collector() -> None:
 
     lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
     ut = shadow.undertake(points, v_ego, lanes["rightmost"])
-    mg = shadow.merge_yield(points, v_ego)
+    mg = shadow.merge_yield(points, v_ego, lanes["rightmost"])
 
     v_cruise = sm["carState"].cruiseState.speed
     caps = [r["cap"] for r in (ut, mg) if r["cap"] is not None]
