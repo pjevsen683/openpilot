@@ -41,6 +41,15 @@ MG_MIN_SPEED = 60 * CV.KPH_TO_MS
 MG_MAX_RANGE = 60.0
 MG_LAT = (2.0, 6.0)                   # m, right lane
 MG_SLIP = 2 * CV.KPH_TO_MS
+# Something far slower than us is not merging traffic. It is a digger behind a
+# roadworks barrier, a parked van on the verge, or a vehicle on a service road
+# running alongside. Real merging traffic is accelerating towards our speed.
+MG_MAX_DIFF = 30 * CV.KPH_TO_MS
+# Even for genuine merging traffic, matching its speed is the wrong target: we
+# do not need to travel at the speed of a car on the ramp, only to avoid
+# arriving at the merge point beside it. This bounds how much the rule may ask
+# for, so a plausible target cannot produce an implausible intervention.
+MG_MAX_CUT = 15 * CV.KPH_TO_MS
 
 
 def _closest(points: list, lat: tuple, max_range: float):
@@ -95,7 +104,13 @@ def merge_yield(points: list, v_ego: float, rightmost_lane: bool | None) -> dict
   if o["v_abs"] + MG_SLIP >= v_ego:
     return {"active": False, "cap": None, "why": "right side is not slower", "target": o}
 
-  cap = max(o["v_abs"] + MG_SLIP, MG_MIN_SPEED)
+  diff = v_ego - o["v_abs"]
+  if diff > MG_MAX_DIFF:
+    return {"active": False, "cap": None,
+            "why": f"right side is {diff * CV.MS_TO_KPH:.0f} km/h slower -- roadside, not merging",
+            "target": o}
+
+  cap = max(o["v_abs"] + MG_SLIP, v_ego - MG_MAX_CUT, MG_MIN_SPEED)
   return {"active": True, "cap": cap,
           "why": f"right {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m", "target": o}
 
