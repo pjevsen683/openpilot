@@ -15,6 +15,7 @@ Otherwise traffic to machines we can reach directly would take the long way roun
 through the VPN -- and in the worst case cut the SSH session you are sitting on.
 """
 import base64
+import ipaddress
 import os
 import re
 import socket
@@ -86,9 +87,36 @@ def last_handshake_age() -> float | None:
 
 
 def on_home_network() -> bool:
-  r = subprocess.run(["ip", "route", "get", HOME_NET.split("/")[0].rsplit(".", 1)[0] + ".1"],
-                     capture_output=True, text=True)
-  return IFACE not in r.stdout and r.returncode == 0
+  """True only when we actually hold an address inside HOME_NET.
+
+  This used to ask the kernel how it would route to the home gateway and treat
+  any answer that did not mention the tunnel as "we are home". Away from home
+  that question is answered by the default route, so the device concluded it
+  was home wherever it had internet, never added the tunnel route for HOME_NET,
+  and quietly sent everything meant for the home network out of the local
+  gateway instead.
+
+  Holding an address in the range is the thing we actually mean. Anything we
+  cannot determine returns False, which routes the home network through the
+  tunnel -- the safe direction, since a tunnel that is up but unnecessary
+  costs nothing while a missing route loses the connection entirely.
+  """
+  try:
+    home = ipaddress.ip_network(HOME_NET, strict=False)
+  except ValueError:
+    return False
+
+  r = subprocess.run(["ip", "-4", "-o", "addr", "show"], capture_output=True, text=True)
+  if r.returncode != 0:
+    return False
+
+  for line in r.stdout.splitlines():
+    if IFACE in line.split()[1:2]:      # skip the tunnel's own address
+      continue
+    m = re.search(r"inet (\d+\.\d+\.\d+\.\d+)/", line)
+    if m and ipaddress.ip_address(m.group(1)) in home:
+      return True
+  return False
 
 
 def start_tunnel() -> bool:
@@ -144,7 +172,7 @@ def start_tunnel() -> bool:
   )
   try:
     if "errno=0" not in uapi(payload):
-      cloudlog.error("wg_tunnel: UAPI afviste konfigurationen")
+      cloudlog.error("wg_tunnel: UAPI rejected the configuration")
       return False
   except OSError as e:
     cloudlog.error("wg_tunnel: UAPI unavailable (%s)", e)
@@ -173,7 +201,7 @@ def main() -> None:
     # With no handshake for over three keepalive periods the tunnel is dead.
     if age is None or age > 90:
       cloudlog.info("wg_tunnel: bringing up tunnel (handshake: %s)",
-                    "aldrig" if age is None else f"{age:.0f}s siden")
+                    "never" if age is None else f"{age:.0f}s ago")
       start_tunnel()
     rk.keep_time()
 
