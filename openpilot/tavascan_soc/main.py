@@ -137,15 +137,36 @@ def discovery_messages() -> list[tuple[str, str]]:
   return msgs
 
 
-def write_state(state: dict, history: list) -> None:
-  """Writes the latest state atomically so a reader never sees half a file."""
+def write_state(state: dict, history: list, latest: dict, last_ts: float | None) -> None:
+  """Writes the latest state atomically so a reader never sees half a file.
+
+  The decoded signals go in alongside the published shape so a restart can pick
+  up where it left off. Without that, a reboot leaves every value empty until
+  the CAN bus next wakes, which can be many hours after the car is parked.
+  """
   try:
     tmp = STATE_PATH + ".tmp"
     with open(tmp, "w") as f:
-      json.dump({"state": state, "history": history}, f)
+      json.dump({"state": state, "history": history,
+                 "latest": latest, "last_ts": last_ts}, f)
     os.replace(tmp, STATE_PATH)
   except OSError:
     pass
+
+
+def read_state() -> tuple[dict, list, float | None]:
+  """Restores what the previous run knew. Missing or unreadable is not an error."""
+  try:
+    with open(STATE_PATH) as f:
+      blob = json.load(f)
+  except (OSError, ValueError):
+    return {}, [], None
+  latest = blob.get("latest")
+  history = blob.get("history")
+  last_ts = blob.get("last_ts")
+  return (latest if isinstance(latest, dict) else {},
+          history if isinstance(history, list) else [],
+          last_ts if isinstance(last_ts, (int, float)) else None)
 
 
 def sample(sock, duration: float) -> tuple[bool, dict]:
@@ -167,9 +188,9 @@ def main() -> None:
   can_sock = messaging.sub_sock("can", timeout=100)
   sm = messaging.SubMaster(["pandaStates"])
   discovery_sent = False
-  latest: dict = {}
-  history: list = []
-  last_ts: float | None = None
+  latest, history, last_ts = read_state()
+  if latest:
+    cloudlog.info("tavascan_soc: restored %d signals from the previous run", len(latest))
   rk = Ratekeeper(1.0 / INTERVAL_S)
 
   cloudlog.info(f"tavascan_soc: publishing to {MQTT_HOST}:{MQTT_PORT} every {INTERVAL_S:.0f}s")
@@ -214,7 +235,7 @@ def main() -> None:
     if state["soc_pct"] is not None:
       history.append([int(time.time()), state["soc_pct"]])
       del history[:-HISTORY_MAX]
-    write_state(state, history)
+    write_state(state, history, latest, last_ts)
 
     msgs = []
     if not discovery_sent:
