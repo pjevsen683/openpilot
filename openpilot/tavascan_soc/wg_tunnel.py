@@ -32,6 +32,7 @@ IFACE = os.getenv("WG_IFACE", "wg0")
 HOME_NET = os.getenv("WG_HOME_NET", "10.0.1.0/24")
 VPN_NET = os.getenv("WG_VPN_NET", "10.6.0.0/24")
 CHECK_S = float(os.getenv("WG_CHECK_INTERVAL", "60"))
+MTU = os.getenv("WG_MTU", "1280")
 SOCK = f"/var/run/wireguard/{IFACE}.sock"
 
 _wg_proc: subprocess.Popen | None = None
@@ -179,7 +180,12 @@ def start_tunnel() -> bool:
     return False
 
   sh("ip", "address", "add", addr, "dev", IFACE)
-  sh("ip", "link", "set", "mtu", "1420", "up", "dev", IFACE)
+  # 1420 is the usual WireGuard figure and it is too high here. Over a phone
+  # hotspot the path drops anything above about 1400 bytes, which lets small
+  # packets through -- ping, a TCP handshake -- while silently killing an SSH
+  # key exchange. Measured with ip route get and DF pings: 1372 bytes of
+  # payload arrived, 1400 did not. 1280 is the floor every path must carry.
+  sh("ip", "link", "set", "mtu", MTU, "up", "dev", IFACE)
   sh("ip", "route", "add", VPN_NET, "dev", IFACE)
   if not on_home_network():
     sh("ip", "route", "add", HOME_NET, "dev", IFACE)
