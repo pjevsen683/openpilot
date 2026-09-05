@@ -181,6 +181,7 @@ function render(d) {
   if (!document.getElementById("bev")) {
     app.innerHTML = `
       <div class="row" id="nums"></div>
+      <div id="leftlane"></div>
       <h2>bird's eye
         <label class="tog"><input type="checkbox" id="mapchk" checked> map</label>
         <span class="tog">width <button class="zb" data-w="4">4</button><button class="zb" data-w="8">8</button><button class="zb" data-w="16">16</button> m</span>
@@ -213,6 +214,17 @@ function render(d) {
     <div class="card"><div class="lbl">would be</div>
       <div class="big" style="color:${delta === null ? "#666" : "#ff9c3a"}">
         ${delta === null ? "no change" : delta.toFixed(0) + " km/h"}</div></div>`;
+
+  const L2 = d.left_lane || {};
+  const seen = L2.nearest;
+  document.getElementById("leftlane").innerHTML = `<div class="verdict ${L2.slower ? "on" : ""}">
+      <b>left lane</b> &mdash; ${seen
+        ? `${(seen.v_abs * 3.6).toFixed(0)} km/h at ${seen.d.toFixed(0)} m,
+           ${seen.y.toFixed(1)} m across
+           &nbsp;<b>${L2.diff_kph > 0 ? "+" : ""}${L2.diff_kph} km/h</b> vs us`
+        : "nothing in range"}
+      <div class="why">${L2.count} object(s) in the left lane &middot;
+        ${L2.slower ? "slower than us" : seen ? "not slower, so no reason to hold back" : "the rule has nothing to act on"}</div></div>`;
   document.getElementById("rules").innerHTML =
     verdict("Undertaking guard", d.undertake) + verdict("Merge yield", d.merge_yield);
   document.getElementById("psd").innerHTML = psdPanel(d.psd);

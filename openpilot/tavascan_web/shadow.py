@@ -115,6 +115,29 @@ def merge_yield(points: list, v_ego: float, rightmost_lane: bool | None) -> dict
           "why": f"right {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m", "target": o}
 
 
+def left_lane_report(points: list, v_ego: float) -> dict:
+  """What the undertaking rule can see to its left, whether or not it acts.
+
+  The rule almost never fires, and the reason turned out to be the traffic
+  rather than the code: on a motorway drive, 29 % of frames above 70 km/h had a
+  left-lane object, but only about one in ten of those was slower than us. The
+  left lane overtakes; that is what it is for.
+
+  That makes the rule hard to trust from the outside, because silence looks the
+  same whether it is working or broken. This reports the nearest left-lane
+  object continuously so silence can be told apart from blindness.
+  """
+  left = [p for p in points if UT_LAT[0] < p["y"] < UT_LAT[1] and UT_MIN_RANGE < p["d"] < UT_MAX_RANGE]
+  out = {"count": len(left), "nearest": None, "slower": None, "diff_kph": None}
+  if not left:
+    return out
+  o = min(left, key=lambda p: p["d"])
+  out["nearest"] = o
+  out["diff_kph"] = round((o["v_abs"] - v_ego) * CV.MS_TO_KPH, 1)
+  out["slower"] = bool(o["v_abs"] + UT_SLIP < v_ego)
+  return out
+
+
 def lane_position(lane_line_probs, road_edges) -> dict:
   """Rough estimate of where we sit across the carriageway.
 
