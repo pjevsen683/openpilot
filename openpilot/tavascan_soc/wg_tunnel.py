@@ -120,6 +120,26 @@ def on_home_network() -> bool:
   return False
 
 
+def sync_home_route() -> None:
+  """Adds or removes the tunnel route for HOME_NET to match where we are.
+
+  Adding it on the way out was never the hard part -- taking it away again is.
+  The route carries no metric, so it beats the wlan0 route on arriving home and
+  the home network becomes unreachable over the LAN it is sitting on, which is
+  the session-cutting case the module docstring warns about. Reconciling on
+  every check rather than only at tunnel start is what keeps the two in step.
+  """
+  home = on_home_network()
+  present = subprocess.run(["ip", "route", "show", HOME_NET, "dev", IFACE],
+                           capture_output=True, text=True).stdout.strip() != ""
+  if home and present:
+    cloudlog.info("wg_tunnel: at home, removing the tunnel route for %s", HOME_NET)
+    sh("ip", "route", "del", HOME_NET, "dev", IFACE)
+  elif not home and not present:
+    cloudlog.info("wg_tunnel: away, routing %s through the tunnel", HOME_NET)
+    sh("ip", "route", "add", HOME_NET, "dev", IFACE)
+
+
 def start_tunnel() -> bool:
   conf = open(CONF).read()
   priv, peer = conf_get(conf, "PrivateKey"), conf_get(conf, "PublicKey")
@@ -187,8 +207,7 @@ def start_tunnel() -> bool:
   # payload arrived, 1400 did not. 1280 is the floor every path must carry.
   sh("ip", "link", "set", "mtu", MTU, "up", "dev", IFACE)
   sh("ip", "route", "add", VPN_NET, "dev", IFACE)
-  if not on_home_network():
-    sh("ip", "route", "add", HOME_NET, "dev", IFACE)
+  sync_home_route()
 
   cloudlog.info("wg_tunnel: up to %s (%s:%s) as %s", host, ep_ip, port, addr)
   return True
@@ -209,6 +228,9 @@ def main() -> None:
       cloudlog.info("wg_tunnel: bringing up tunnel (handshake: %s)",
                     "never" if age is None else f"{age:.0f}s ago")
       start_tunnel()
+    elif iface_exists():
+      # The tunnel is healthy, but we may have moved. Keep the route honest.
+      sync_home_route()
     rk.keep_time()
 
 
