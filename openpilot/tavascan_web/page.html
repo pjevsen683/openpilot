@@ -150,6 +150,29 @@ function osmPanel(o) {
   return head + `<table><tr><th>param</th><th>value</th></tr>${rows}</table>`;
 }
 
+function psdPanel(p) {
+  if (!p) return '<p class="none">no PSD</p>';
+  if (p.age_s === null || p.age_s === undefined)
+    return '<p class="none">the car is not broadcasting PSD</p>';
+  const here = p.here;
+  const head = `<div class="card">
+      <div>${here ? `${here.category}, <b>${here.lanes}</b> lane(s)` : "position segment unknown"}
+        &nbsp;&middot;&nbsp; guidance <b>${p.guidance === null ? "?" : p.guidance ? "on" : "off"}</b>
+        &nbsp;&middot;&nbsp; ${p.segments_known} segments known</div>
+      <div class="why">lane counts unverified &middot; PSD ${p.age_s}s old
+        &middot; own lane reads ${p.pos_lane_raw} (not populated by the car)</div></div>`;
+  const br = (p.branches || []);
+  if (!br.length) return head + '<p class="none">nothing branches off the road ahead</p>';
+  const rows = br.slice(0, 8).map(b => `<tr>
+      <td>${b.at_m} m</td>
+      <td class="${b.side === "right" ? "lane-right" : "lane-left"}">${b.side}</td>
+      <td>${b.angle}&deg;</td>
+      <td>${b.ramp ? "<b>ramp</b>" : b.category}</td>
+      <td>${b.lanes}</td></tr>`).join("");
+  return head + `<table><tr><th>ahead</th><th>side</th><th>angle</th>
+      <th>type</th><th>lanes</th></tr>${rows}</table>`;
+}
+
 function render(d) {
   const app = document.getElementById("app");
   if (!d.ready) { app.innerHTML = '<p class="none">waiting for the car…</p>'; return; }
@@ -174,6 +197,7 @@ function render(d) {
         <span><i class="sw" style="background:#2b6cb0"></i> map road</span>
       </div>
       <h2>rules (shadow only &mdash; nothing is applied)</h2><div id="rules"></div>
+      <h2>road ahead (PSD &mdash; the car's own navigation)</h2><div id="psd"></div>
       <h2>map layer</h2><div id="osm"></div>
       <h2>lane</h2><div id="lane"></div>`;
     document.getElementById("mapchk").onchange = e => { showMap = e.target.checked; };
@@ -191,6 +215,7 @@ function render(d) {
         ${delta === null ? "no change" : delta.toFixed(0) + " km/h"}</div></div>`;
   document.getElementById("rules").innerHTML =
     verdict("Undertaking guard", d.undertake) + verdict("Merge yield", d.merge_yield);
+  document.getElementById("psd").innerHTML = psdPanel(d.psd);
   document.getElementById("osm").innerHTML = osmPanel(d.osm);
   const L = d.lanes;
   document.getElementById("lane").innerHTML = `<div class="card">

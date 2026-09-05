@@ -24,7 +24,7 @@ import time
 from openpilot.cereal import messaging
 from openpilot.common.realtime import Ratekeeper
 from opendbc.car.common.conversions import Conversions as CV
-from openpilot.tavascan_web import geometry, osm, server, shadow
+from openpilot.tavascan_web import geometry, osm, psd as psd_mod, server, shadow
 
 PORT = int(os.getenv("TAVASCAN_WEB_PORT", "8088"))
 TRACE = os.getenv("TAVASCAN_WEB_TRACE", "/data/tavascan_shadow.jsonl")
@@ -44,6 +44,9 @@ _lock = threading.Lock()
 
 def collector() -> None:
   sm = messaging.SubMaster(["carState", "modelV2", "radarTracks", "liveMapDataSP"])
+  # PSD is not in the cereal schema, so it is read straight off the bus.
+  can_sock = messaging.sub_sock("can", timeout=0)
+  psd = psd_mod.PSD()
   rk = Ratekeeper(10.0)
   points: list = []
   last_radar = 0.0
@@ -55,6 +58,11 @@ def collector() -> None:
   while True:
     sm.update(50)
     v_ego = sm["carState"].vEgo
+
+    for m in messaging.drain_sock(can_sock):
+      for c in m.can:
+        if c.src == psd_mod.BUS and c.address in (psd_mod.ADDR_04, psd_mod.ADDR_05, psd_mod.ADDR_06):
+          psd.feed(c.address, bytes(c.dat))
 
     if sm.updated["radarTracks"]:
       points = geometry.radar_points(sm["radarTracks"], v_ego)
@@ -89,6 +97,7 @@ def collector() -> None:
       "scene": geometry.scene(sm["modelV2"]),
       "lanes": lanes,
       "osm": osm_view,
+      "psd": psd.snapshot(),
       "undertake": ut,
       "merge_yield": mg,
       "would_cap_kph": round(combined * CV.MS_TO_KPH, 1) if combined else None,
@@ -135,6 +144,8 @@ def trace_record(snap: dict) -> dict:
     "road": osm_live.get("road_name"),
     "limit_kph": osm_live.get("speed_limit_kph"),
     "radar_age_s": snap.get("radar_age_s"),
+    "psd": {k: (snap.get("psd") or {}).get(k)
+            for k in ("guidance", "here", "branches", "age_s")},
   }
 
 
