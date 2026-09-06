@@ -80,6 +80,7 @@ class PSD:
   def __init__(self):
     self.segments: dict[int, dict] = {}
     self.pos_segment: int | None = None
+    self.pos_remaining_m: int | None = None
     self.pos_lane: int | None = None
     self.guidance: bool | None = None
     self.country: int | None = None
@@ -115,6 +116,12 @@ class PSD:
       sid = _b(data, 0, 6)
       if sid:
         self.pos_segment = sid
+      # Not the segment's length, despite the name: it counts down to the end of
+      # the segment we are in. Checked against distance travelled -- a 28 m
+      # segment reads 28 and falls to 6 after 23 m driven, at 2 m resolution.
+      # This is why distances here do not need the car's speed integrated: the
+      # one number PSD appeared to be missing is the one it was sending.
+      self.pos_remaining_m = _b(data, 6, 7) * 2
       self.pos_lane = _b(data, 22, 3)
     elif address == ADDR_06 and _b(data, 0, 3) == 0:
       self.guidance = bool(_b(data, 26, 1))
@@ -129,10 +136,10 @@ class PSD:
   def path_ahead(self) -> dict:
     """Follows the most probable path from where we are, noting what branches off.
 
-    Distances are measured from the START of the segment we are currently in.
-    PSD gives no offset into that segment, so everything here is out by however
-    far we are into it -- up to one segment length. Good enough to say "a ramp
-    joins in about 200 m", not good enough for anything that needs metres.
+    Distances are measured from the car. PSD_Pos_Segmentlaenge counts down to
+    the end of the segment we are in, at 2 m resolution, so the first hop is
+    however much of it is left rather than the whole thing. That removes the
+    up-to-one-segment error the earlier version carried.
     """
     self._expire()
     out = {"segments": [], "branches": [], "here": None}
@@ -145,8 +152,16 @@ class PSD:
 
     cur = self.segments[self.pos_segment]
     out["here"] = {"category": ROAD_CATEGORY.get(cur["category"], "?"),
-                   "lanes": cur["lanes"], "segment": cur["id"]}
+                   "lanes": cur["lanes"], "segment": cur["id"],
+                   "remaining_m": self.pos_remaining_m}
+    # Distances are measured from the car, not from the start of the segment it
+    # happens to be in: the first hop is however much of this segment is left.
+    remaining = self.pos_remaining_m
+    if remaining is None or not (0 <= remaining <= cur["length_m"] + 4):
+      remaining = cur["length_m"]        # stale or implausible: fall back
+    out["remaining_trusted"] = remaining is self.pos_remaining_m
     dist = 0.0
+    first = True
     seen = set()
     for _ in range(MAX_PATH):
       if cur["id"] in seen:
@@ -154,6 +169,7 @@ class PSD:
       seen.add(cur["id"])
       r_end = radius_from_psd(cur["curv_end"])
       out["segments"].append({"id": cur["id"], "at_m": round(dist),
+                              "ends_at_m": round(dist + (remaining if first else cur["length_m"])),
                               "length_m": cur["length_m"], "lanes": cur["lanes"],
                               "category": ROAD_CATEGORY.get(cur["category"], "?"),
                               "radius_m": r_end,
@@ -172,7 +188,8 @@ class PSD:
       if main["ramp"] and not (main["probable"] or main["straightest"]):
         for s2 in nxt:
           out["branches"].append({
-            "at_m": round(dist + cur["length_m"]), "side": "right" if s2["branch_dir_bit"] else "left",
+            "at_m": round(dist + (remaining if first else cur["length_m"])),
+            "side": "right" if s2["branch_dir_bit"] else "left",
             "dir_bit": s2["branch_dir_bit"], "angle": s2["branch_angle"],
             "ramp": bool(s2["ramp"]), "lanes": s2["lanes"],
             "category": ROAD_CATEGORY.get(s2["category"], "?"), "probable": s2["probable"],
@@ -180,11 +197,12 @@ class PSD:
             "curve_kph": speed_for_radius(radius_from_psd(s2["curv_start"])),
           })
         break
+      hop = remaining if first else cur["length_m"]
       for s in nxt:
         if s["id"] == main["id"]:
           continue
         out["branches"].append({
-          "at_m": round(dist + cur["length_m"]),
+          "at_m": round(dist + hop),
           # PSD_Abzweigerichtung. Which value means which side is NOT settled:
           # on a motorway drive roughly 80 % of ramps came out "left", and
           # Danish motorway ramps are overwhelmingly on the right, so the
@@ -204,7 +222,8 @@ class PSD:
           "radius_m": radius_from_psd(s["curv_start"]),
           "curve_kph": speed_for_radius(radius_from_psd(s["curv_start"])),
         })
-      dist += cur["length_m"]
+      dist += remaining if first else cur["length_m"]
+      first = False
       cur = main
 
     out["branches"].sort(key=lambda b: b["at_m"])
@@ -214,7 +233,7 @@ class PSD:
     cand = []
     for seg in out["segments"]:
       if seg["curve_kph"]:
-        cand.append({"kind": "bend", "at_m": seg["at_m"] + seg["length_m"],
+        cand.append({"kind": "bend", "at_m": seg["ends_at_m"],
                      "kph": seg["curve_kph"], "radius_m": seg["radius_m"],
                      "confirmed": True, "side": None, "angle": None})
     for br in out["branches"]:
