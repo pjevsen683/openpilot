@@ -23,6 +23,7 @@ WHAT IS TRUSTED AND WHAT IS NOT
   Fahrspuren_Anzahl has since been checked and is trustworthy: it reads 3 on
   the three-lane Oestjyske Motorvej and 1 on the single-lane roads around it.
 """
+import math
 import time
 
 ADDR_04, ADDR_05, ADDR_06 = 0x462, 0x463, 0x464
@@ -34,6 +35,41 @@ MAX_PATH = 12
 
 ROAD_CATEGORY = {0: "unknown", 1: "motorway", 2: "trunk", 3: "primary",
                  4: "secondary", 5: "local", 6: "minor", 7: "other"}
+
+CURV_INVALID = 255
+# PSD encodes curvature as an index that runs the other way from curvature: a
+# low number is a tight bend and a high one is a straight road, with the radius
+# roughly doubling every 40 counts. Fitted against the yaw rate actually driven
+# through 346 segments:
+#
+#     PSD  0-15 -> 205 m      PSD 64-79  ->  712 m
+#     PSD 32-47 -> 304 m      PSD 128-143-> 3480 m
+#
+# A least-squares fit on log radius gives R = 130 * exp(v / 43.5), which tracks
+# the shape well (R^2 = 0.97 in log space) but is off by up to 25 % on any one
+# bucket. The comparison pairs a segment's end curvature against a window of
+# measured yaw rate, so treat the radius as an order of magnitude rather than a
+# number to plan a manoeuvre with.
+CURV_R0, CURV_V0, CURV_DECADE = 130.2, 0.0, 43.5
+CURV_MAX_R = 5000.0
+# Lateral acceleration we are willing to take through a bend, matching the
+# figure sunnypilot's curve speed control uses.
+A_LAT_MAX = 2.0
+
+
+def radius_from_psd(value: int) -> float | None:
+  """Metres, or None when the field is unset or says straight."""
+  if value == CURV_INVALID:
+    return None
+  r = CURV_R0 * math.exp((value - CURV_V0) / CURV_DECADE)
+  return None if r > CURV_MAX_R else round(r)
+
+
+def speed_for_radius(radius: float | None) -> float | None:
+  """km/h that keeps lateral acceleration at A_LAT_MAX through a bend."""
+  if not radius or radius <= 0:
+    return None
+  return round(math.sqrt(A_LAT_MAX * radius) * 3.6)
 
 
 def _b(data: bytes, start: int, length: int) -> int:
@@ -66,6 +102,8 @@ class PSD:
         "lanes": _b(data, 40, 3),
         "ramp": _b(data, 45, 2),
         "branch_dir_bit": _b(data, 56, 1),
+        "curv_start": _b(data, 47, 8),
+        "curv_end": _b(data, 22, 8),
         "branch_angle": round(_b(data, 57, 7) * 1.417323, 1),
         "probable": bool(_b(data, 38, 1)),
         "straightest": bool(_b(data, 39, 1)),
@@ -114,16 +152,34 @@ class PSD:
       if cur["id"] in seen:
         break
       seen.add(cur["id"])
+      r_end = radius_from_psd(cur["curv_end"])
       out["segments"].append({"id": cur["id"], "at_m": round(dist),
                               "length_m": cur["length_m"], "lanes": cur["lanes"],
-                              "category": ROAD_CATEGORY.get(cur["category"], "?")})
+                              "category": ROAD_CATEGORY.get(cur["category"], "?"),
+                              "radius_m": r_end,
+                              "curve_kph": speed_for_radius(r_end)})
       nxt = by_prev.get(cur["id"], [])
       if not nxt:
         break
       # The path we are expected to take; everything else leaving this point is
       # a side road, which is exactly what we want to know about.
       main = next((s for s in nxt if s["probable"]), None) or \
-             next((s for s in nxt if s["straightest"]), None) or nxt[0]
+             next((s for s in nxt if s["straightest"]), None) or \
+             next((s for s in nxt if not s["ramp"]), None) or nxt[0]
+      # If the only way on is a ramp that is neither the probable nor the
+      # straightest path, the mainline segment simply has not arrived yet.
+      # Following the ramp would invent a route we are not taking.
+      if main["ramp"] and not (main["probable"] or main["straightest"]):
+        for s2 in nxt:
+          out["branches"].append({
+            "at_m": round(dist + cur["length_m"]), "side": "right" if s2["branch_dir_bit"] else "left",
+            "dir_bit": s2["branch_dir_bit"], "angle": s2["branch_angle"],
+            "ramp": bool(s2["ramp"]), "lanes": s2["lanes"],
+            "category": ROAD_CATEGORY.get(s2["category"], "?"), "probable": s2["probable"],
+            "radius_m": radius_from_psd(s2["curv_start"]),
+            "curve_kph": speed_for_radius(radius_from_psd(s2["curv_start"])),
+          })
+        break
       for s in nxt:
         if s["id"] == main["id"]:
           continue
@@ -141,11 +197,36 @@ class PSD:
           "ramp": bool(s["ramp"]),
           "lanes": s["lanes"],
           "category": ROAD_CATEGORY.get(s["category"], "?"),
+          # Whether the car expects us to take this one. Only meaningful with
+          # the car's own route guidance running -- on a phone-navigated trip
+          # PSD_Sys_Zielfuehrung reads false and nothing here is a prediction.
+          "probable": s["probable"],
+          "radius_m": radius_from_psd(s["curv_start"]),
+          "curve_kph": speed_for_radius(radius_from_psd(s["curv_start"])),
         })
       dist += cur["length_m"]
       cur = main
 
     out["branches"].sort(key=lambda b: b["at_m"])
+
+    # The single thing worth putting in front of a driver: the next reason to
+    # slow down, whether that is a bend on our own road or a turn off it.
+    cand = []
+    for seg in out["segments"]:
+      if seg["curve_kph"]:
+        cand.append({"kind": "bend", "at_m": seg["at_m"] + seg["length_m"],
+                     "kph": seg["curve_kph"], "radius_m": seg["radius_m"],
+                     "confirmed": True, "side": None, "angle": None})
+    for br in out["branches"]:
+      if br["curve_kph"]:
+        cand.append({"kind": "ramp" if br["ramp"] else "turn", "at_m": br["at_m"],
+                     "kph": br["curve_kph"], "radius_m": br["radius_m"],
+                     "confirmed": bool(br["probable"] and self.guidance),
+                     "side": br["side"], "angle": br["angle"]})
+    # Nearest first, but a bend we will definitely drive through outranks a
+    # turn we may not take.
+    cand.sort(key=lambda c: (c["at_m"], not c["confirmed"]))
+    out["next_slowdown"] = cand[0] if cand else None
     return out
 
   def snapshot(self) -> dict:

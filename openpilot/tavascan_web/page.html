@@ -154,6 +154,17 @@ function psdPanel(p) {
   if (!p) return '<p class="none">no PSD</p>';
   if (p.age_s === null || p.age_s === undefined)
     return '<p class="none">the car is not broadcasting PSD</p>';
+  const ns = p.next_slowdown;
+  const nsBox = ns
+    ? `<div class="verdict ${ns.confirmed ? "on" : ""}">
+        <b>next slowdown</b> &mdash; ${ns.kind}${ns.side ? " " + ns.side : ""}
+        in <b>${ns.at_m} m</b>, radius ${ns.radius_m} m &rarr; <b>${ns.kph} km/h</b>
+        <div class="why">${ns.confirmed
+          ? "on our path"
+          : "a turn we may or may not take &mdash; the car's own guidance is off, so nothing here predicts where you are going"}
+          ${ns.angle ? "&middot; " + ns.angle + "&deg;" : ""}
+          &middot; radius is an order of magnitude, not a measurement</div></div>`
+    : '<div class="verdict"><b>next slowdown</b> &mdash; nothing ahead</div>';
   const here = p.here;
   const head = `<div class="card">
       <div>${here ? `${here.category}, <b>${here.lanes}</b> lane(s)` : "position segment unknown"}
@@ -162,14 +173,14 @@ function psdPanel(p) {
       <div class="why">branch side polarity unconfirmed &middot; PSD ${p.age_s}s old
         &middot; own lane reads ${p.pos_lane_raw} (not populated by the car)</div></div>`;
   const br = (p.branches || []);
-  if (!br.length) return head + '<p class="none">nothing branches off the road ahead</p>';
+  if (!br.length) return nsBox + head + '<p class="none">nothing branches off the road ahead</p>';
   const rows = br.slice(0, 8).map(b => `<tr>
       <td>${b.at_m} m</td>
       <td class="${b.side === "right" ? "lane-right" : "lane-left"}">${b.side}<span style="color:#666"> (${b.dir_bit})</span></td>
       <td>${b.angle}&deg;</td>
       <td>${b.ramp ? "<b>ramp</b>" : b.category}</td>
       <td>${b.lanes}</td></tr>`).join("");
-  return head + `<table><tr><th>ahead</th><th>side</th><th>angle</th>
+  return nsBox + head + `<table><tr><th>ahead</th><th>side</th><th>angle</th>
       <th>type</th><th>lanes</th></tr>${rows}</table>`;
 }
 
