@@ -159,13 +159,13 @@ function psdPanel(p) {
       <div>${here ? `${here.category}, <b>${here.lanes}</b> lane(s)` : "position segment unknown"}
         &nbsp;&middot;&nbsp; guidance <b>${p.guidance === null ? "?" : p.guidance ? "on" : "off"}</b>
         &nbsp;&middot;&nbsp; ${p.segments_known} segments known</div>
-      <div class="why">lane counts unverified &middot; PSD ${p.age_s}s old
+      <div class="why">branch side polarity unconfirmed &middot; PSD ${p.age_s}s old
         &middot; own lane reads ${p.pos_lane_raw} (not populated by the car)</div></div>`;
   const br = (p.branches || []);
   if (!br.length) return head + '<p class="none">nothing branches off the road ahead</p>';
   const rows = br.slice(0, 8).map(b => `<tr>
       <td>${b.at_m} m</td>
-      <td class="${b.side === "right" ? "lane-right" : "lane-left"}">${b.side}</td>
+      <td class="${b.side === "right" ? "lane-right" : "lane-left"}">${b.side}<span style="color:#666"> (${b.dir_bit})</span></td>
       <td>${b.angle}&deg;</td>
       <td>${b.ramp ? "<b>ramp</b>" : b.category}</td>
       <td>${b.lanes}</td></tr>`).join("");

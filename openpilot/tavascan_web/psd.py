@@ -16,9 +16,12 @@ WHAT IS TRUSTED AND WHAT IS NOT
   plausible ranges on a real drive. Two have not earned trust yet:
     * PSD_Pos_Fahrspur, which should say which lane we are in, reads a constant
       0 -- it appears not to be populated, so it is reported but not used.
-    * Fahrspuren_Anzahl showed values up to 5 on a day of single-lane driving,
-      which is not obviously right. Treat lane counts as unverified until
-      checked against a motorway.
+    * PSD_Abzweigerichtung, the side a branch leaves on, reads "left" for about
+      80 % of ramps on a motorway where the ramps are on the right. The
+      polarity is probably inverted, so the raw bit is reported alongside.
+
+  Fahrspuren_Anzahl has since been checked and is trustworthy: it reads 3 on
+  the three-lane Oestjyske Motorvej and 1 on the single-lane roads around it.
 """
 import time
 
@@ -62,7 +65,7 @@ class PSD:
         "category": _b(data, 19, 3),
         "lanes": _b(data, 40, 3),
         "ramp": _b(data, 45, 2),
-        "branch_right": bool(_b(data, 56, 1)),
+        "branch_dir_bit": _b(data, 56, 1),
         "branch_angle": round(_b(data, 57, 7) * 1.417323, 1),
         "probable": bool(_b(data, 38, 1)),
         "straightest": bool(_b(data, 39, 1)),
@@ -126,7 +129,14 @@ class PSD:
           continue
         out["branches"].append({
           "at_m": round(dist + cur["length_m"]),
-          "side": "right" if s["branch_right"] else "left",
+          # PSD_Abzweigerichtung. Which value means which side is NOT settled:
+          # on a motorway drive roughly 80 % of ramps came out "left", and
+          # Danish motorway ramps are overwhelmingly on the right, so the
+          # polarity is probably the other way round. The raw bit is carried
+          # through so it can be checked against a known exit rather than
+          # guessed at.
+          "side": "right" if s["branch_dir_bit"] else "left",
+          "dir_bit": s["branch_dir_bit"],
           "angle": s["branch_angle"],
           "ramp": bool(s["ramp"]),
           "lanes": s["lanes"],
