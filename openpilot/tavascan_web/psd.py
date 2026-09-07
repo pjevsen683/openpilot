@@ -16,9 +16,10 @@ WHAT IS TRUSTED AND WHAT IS NOT
   plausible ranges on a real drive. Two have not earned trust yet:
     * PSD_Pos_Fahrspur, which should say which lane we are in, reads a constant
       0 -- it appears not to be populated, so it is reported but not used.
-    * PSD_Abzweigerichtung, the side a branch leaves on, reads "left" for about
-      80 % of ramps on a motorway where the ramps are on the right. The
-      polarity is probably inverted, so the raw bit is reported alongside.
+    * PSD_Abzweigerichtung, the side a branch leaves on, is read as 1 = left by
+      inference rather than measurement -- see the note where it is decoded.
+      The raw bit is reported alongside so it can be checked against a known
+      exit.
 
   Fahrspuren_Anzahl has since been checked and is trustworthy: it reads 3 on
   the three-lane Oestjyske Motorvej and 1 on the single-lane roads around it.
@@ -104,7 +105,9 @@ class PSD:
         "ramp": _b(data, 45, 2),
         "branch_dir_bit": _b(data, 56, 1),
         "curv_start": _b(data, 47, 8),
+        "curv_start_vz": _b(data, 55, 1),
         "curv_end": _b(data, 22, 8),
+        "curv_end_vz": _b(data, 30, 1),
         "branch_angle": round(_b(data, 57, 7) * 1.417323, 1),
         "probable": bool(_b(data, 38, 1)),
         "straightest": bool(_b(data, 39, 1)),
@@ -173,6 +176,13 @@ class PSD:
                               "length_m": cur["length_m"], "lanes": cur["lanes"],
                               "category": ROAD_CATEGORY.get(cur["category"], "?"),
                               "radius_m": r_end,
+                              "radius_start_m": radius_from_psd(cur["curv_start"]),
+                              # +1 left, -1 right. Verified against the yaw rate
+                              # driven through 70 measurable bends: the bit set
+                              # meant left in 36 of 37 cases and clear meant
+                              # right in 29 of 33.
+                              "bend_dir": 1 if cur["curv_end_vz"] else -1,
+                              "bend_dir_start": 1 if cur["curv_start_vz"] else -1,
                               "curve_kph": speed_for_radius(r_end)})
       nxt = by_prev.get(cur["id"], [])
       if not nxt:
@@ -203,13 +213,15 @@ class PSD:
           continue
         out["branches"].append({
           "at_m": round(dist + hop),
-          # PSD_Abzweigerichtung. Which value means which side is NOT settled:
-          # on a motorway drive roughly 80 % of ramps came out "left", and
-          # Danish motorway ramps are overwhelmingly on the right, so the
-          # polarity is probably the other way round. The raw bit is carried
-          # through so it can be checked against a known exit rather than
-          # guessed at.
-          "side": "right" if s["branch_dir_bit"] else "left",
+          # PSD_Abzweigerichtung. Read as 1 = left, on two lines of evidence
+          # rather than a direct measurement: the neighbouring curvature sign
+          # bit measured out as 1 = left, and with the opposite reading roughly
+          # 80 % of motorway ramps came out on the left, where Danish ramps are
+          # overwhelmingly on the right. Both flip the same way. What would
+          # settle it directly is watching the bit on a branch we actually take
+          # and comparing it with the yaw; until then the raw bit travels
+          # alongside so the reading can be checked against a known exit.
+          "side": "left" if s["branch_dir_bit"] else "right",
           "dir_bit": s["branch_dir_bit"],
           "angle": s["branch_angle"],
           "ramp": bool(s["ramp"]),

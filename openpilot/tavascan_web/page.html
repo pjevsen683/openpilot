@@ -150,6 +150,114 @@ function osmPanel(o) {
   return head + `<table><tr><th>param</th><th>value</th></tr>${rows}</table>`;
 }
 
+// ---- route map -----------------------------------------------------------
+// Draws the PSD segment chain as an actual road: walk it in 2 m steps, turning
+// by ds/R using each segment's curvature, and fit whatever comes out to the
+// canvas. Branches are drawn as stubs at their own angle. This is the car's
+// map, so it shows what is coming well past anything the camera can see.
+const ROUTE_M = 500;
+
+function drawRoute(cv, psd) {
+  const ctx = cv.getContext("2d");
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = 260;
+  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  cv.style.height = h + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  const segs = (psd && psd.segments) || [];
+  if (!segs.length) {
+    ctx.fillStyle = "#666"; ctx.font = "12px system-ui";
+    ctx.fillText("no route from the car", 10, 20); return;
+  }
+
+  // walk the chain in the car's frame: x forward, y right, heading in radians
+  const pts = [{ s: 0, x: 0, y: 0 }];
+  const marks = [];
+  let x = 0, y = 0, th = 0, travelled = 0;
+  for (const sg of segs) {
+    const len = Math.max(2, sg.ends_at_m - sg.at_m);
+    // blend start and end radius across the segment where both are known
+    const r0 = sg.radius_start_m, r1 = sg.radius_m;
+    const d0 = sg.bend_dir_start, d1 = sg.bend_dir;
+    for (let s = 0; s < len && travelled < ROUTE_M; s += 2) {
+      const f = s / len;
+      let k = 0;
+      if (r0 && r1) k = ((1 - f) * d0 / r0) + (f * d1 / r1);
+      else if (r1) k = d1 / r1;
+      else if (r0) k = d0 / r0;
+      th += k * 2;
+      x += Math.cos(th) * 2; y += Math.sin(th) * 2;
+      travelled += 2;
+      pts.push({ s: travelled, x, y });
+    }
+    if (travelled >= ROUTE_M) break;
+  }
+  for (const b of (psd.branches || [])) {
+    if (b.at_m > ROUTE_M) continue;
+    const at = pts.reduce((a, p) => Math.abs(p.s - b.at_m) < Math.abs(a.s - b.at_m) ? p : a, pts[0]);
+    marks.push({ p: at, b });
+  }
+
+  // fit
+  let minx = 0, maxx = 0, miny = 0, maxy = 0;
+  for (const p of pts) { minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x);
+                         miny = Math.min(miny, p.y); maxy = Math.max(maxy, p.y); }
+  const pad = 28;
+  const sc = Math.min((w - 2 * pad) / Math.max(20, maxy - miny),
+                      (h - 2 * pad) / Math.max(40, maxx - minx));
+  // A road that runs mostly straight would otherwise sit as a ribbon down one
+  // edge, so centre whatever lateral extent it has.
+  const offx = (w - (maxy - miny) * sc) / 2;
+  const PX = p => offx + (p.y - miny) * sc;
+  const PY = p => h - pad - (p.x - minx) * sc;
+
+  // distance ticks along the road
+  ctx.strokeStyle = "#2a2a2a"; ctx.fillStyle = "#555"; ctx.font = "10px system-ui";
+  for (const p of pts) {
+    if (p.s % 100 || !p.s) continue;
+    ctx.beginPath(); ctx.arc(PX(p), PY(p), 3, 0, 7); ctx.stroke();
+    ctx.fillText(p.s + " m", PX(p) + 6, PY(p) + 3);
+  }
+
+  // the road
+  ctx.strokeStyle = "#d8d8d8"; ctx.lineWidth = 5; ctx.lineJoin = "round";
+  ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(PX(p), PY(p)) : ctx.moveTo(PX(p), PY(p)));
+  ctx.stroke();
+
+  // branches as stubs at their own angle
+  for (const m of marks) {
+    const i = pts.indexOf(m.p);
+    const prev = pts[Math.max(0, i - 3)];
+    const base = Math.atan2(m.p.y - prev.y, m.p.x - prev.x);
+    const sign = m.b.side === "right" ? 1 : -1;
+    const a = base + sign * (m.b.angle || 30) * Math.PI / 180;
+    const L = 26;
+    ctx.strokeStyle = m.b.ramp ? "#ff9c3a" : "#46b3ff";
+    ctx.lineWidth = m.b.probable ? 4 : 2;
+    ctx.setLineDash(m.b.probable ? [] : [4, 3]);
+    ctx.beginPath();
+    ctx.moveTo(PX(m.p), PY(m.p));
+    ctx.lineTo(PX(m.p) + Math.sin(a) * L, PY(m.p) - Math.cos(a) * L);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // us
+  ctx.fillStyle = "#3ddc84";
+  ctx.beginPath(); ctx.arc(PX(pts[0]), PY(pts[0]), 6, 0, 7); ctx.fill();
+
+  // the next slowdown, marked on the road
+  const ns = psd.next_slowdown;
+  if (ns && ns.at_m <= ROUTE_M) {
+    const p = pts.reduce((a, q) => Math.abs(q.s - ns.at_m) < Math.abs(a.s - ns.at_m) ? q : a, pts[0]);
+    ctx.strokeStyle = "#ff9c3a"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(PX(p), PY(p), 9, 0, 7); ctx.stroke();
+    ctx.fillStyle = "#ff9c3a"; ctx.font = "600 11px system-ui";
+    ctx.fillText(ns.kph + " km/h", PX(p) + 12, PY(p) - 6);
+  }
+}
+
 function psdPanel(p) {
   if (!p) return '<p class="none">no PSD</p>';
   if (p.age_s === null || p.age_s === undefined)
@@ -172,16 +280,7 @@ function psdPanel(p) {
         &nbsp;&middot;&nbsp; ${p.segments_known} segments known</div>
       <div class="why">${here && here.remaining_m != null ? here.remaining_m + " m left of this segment &middot; " : ""}branch side polarity unconfirmed &middot; PSD ${p.age_s}s old
         &middot; own lane reads ${p.pos_lane_raw} (not populated by the car)</div></div>`;
-  const br = (p.branches || []);
-  if (!br.length) return nsBox + head + '<p class="none">nothing branches off the road ahead</p>';
-  const rows = br.slice(0, 8).map(b => `<tr>
-      <td>${b.at_m} m</td>
-      <td class="${b.side === "right" ? "lane-right" : "lane-left"}">${b.side}<span style="color:#666"> (${b.dir_bit})</span></td>
-      <td>${b.angle}&deg;</td>
-      <td>${b.ramp ? "<b>ramp</b>" : b.category}</td>
-      <td>${b.lanes}</td></tr>`).join("");
-  return nsBox + head + `<table><tr><th>ahead</th><th>side</th><th>angle</th>
-      <th>type</th><th>lanes</th></tr>${rows}</table>`;
+  return nsBox + head;
 }
 
 function render(d) {
@@ -209,7 +308,15 @@ function render(d) {
         <span><i class="sw" style="background:#2b6cb0"></i> map road</span>
       </div>
       <h2>rules (shadow only &mdash; nothing is applied)</h2><div id="rules"></div>
-      <h2>road ahead (PSD &mdash; the car's own navigation)</h2><div id="psd"></div>
+      <h2>road ahead (PSD &mdash; the car's own map, 500 m)</h2>
+      <canvas id="route"></canvas>
+      <div class="legend">
+        <span><i class="sw" style="background:#3ddc84"></i> us</span>
+        <span><i class="sw" style="background:#ff9c3a"></i> ramp</span>
+        <span><i class="sw" style="background:#46b3ff"></i> other turning</span>
+        <span>solid = the car expects us to take it &middot; which side a turning leaves on is inferred, not measured</span>
+      </div>
+      <div id="psd"></div>
       <h2>map layer</h2><div id="osm"></div>
       <h2>lane</h2><div id="lane"></div>`;
     document.getElementById("mapchk").onchange = e => { showMap = e.target.checked; };
@@ -239,6 +346,7 @@ function render(d) {
   document.getElementById("rules").innerHTML =
     verdict("Undertaking guard", d.undertake) + verdict("Merge yield", d.merge_yield);
   document.getElementById("psd").innerHTML = psdPanel(d.psd);
+  drawRoute(document.getElementById("route"), d.psd);
   document.getElementById("osm").innerHTML = osmPanel(d.osm);
   const L = d.lanes;
   document.getElementById("lane").innerHTML = `<div class="card">
