@@ -23,6 +23,10 @@ WHAT IS TRUSTED AND WHAT IS NOT
 
   Fahrspuren_Anzahl has since been checked and is trustworthy: it reads 3 on
   the three-lane Oestjyske Motorvej and 1 on the single-lane roads around it.
+
+  Curvature does NOT describe roundabouts or other tight corners -- see the note
+  by the fit. It is useful for the sweeping bends of a main road and nothing
+  tighter, which is a real limit on how much this can ever be worth.
 """
 import math
 import time
@@ -53,14 +57,28 @@ CURV_INVALID = 255
 # number to plan a manoeuvre with.
 CURV_R0, CURV_V0, CURV_DECADE = 130.2, 0.0, 43.5
 CURV_MAX_R = 5000.0
+# The fit was built from ordinary road bends and only holds there. Checked
+# against roundabouts, which we measured at 8-16 m radius, PSD reported values
+# of 14, 17, 22, 76, 137, 175 and 255 for the same kind of corner -- no order at
+# all. So tight corners are not described by this field, and a number computed
+# for one would be invented. Outside the range the fit was measured over, no
+# radius is reported and nothing downstream claims to know the speed.
+CURV_VALID_LO, CURV_VALID_HI = 32, 145
 # Lateral acceleration we are willing to take through a bend, matching the
 # figure sunnypilot's curve speed control uses.
 A_LAT_MAX = 2.0
+# A bend only counts as a reason to slow down if it would actually make us slow
+# down. Without this, the end of every straight segment is announced with the
+# speed its 1000 m radius allows -- "bend in 14 m, 181 km/h" -- which is noise
+# dressed up as a warning.
+SLOWDOWN_MARGIN_KPH = 5
+# Used when we do not know our own speed. Nothing above this constrains anyone.
+SLOWDOWN_CEILING_KPH = 110
 
 
 def radius_from_psd(value: int) -> float | None:
   """Metres, or None when the field is unset or says straight."""
-  if value == CURV_INVALID:
+  if value == CURV_INVALID or not (CURV_VALID_LO <= value <= CURV_VALID_HI):
     return None
   r = CURV_R0 * math.exp((value - CURV_V0) / CURV_DECADE)
   return None if r > CURV_MAX_R else round(r)
@@ -136,7 +154,14 @@ class PSD:
       del self.segments[sid]
 
   # --- interpretation ------------------------------------------------------
-  def path_ahead(self) -> dict:
+  def _is_slowdown(self, kph: float | None, v_ego_kph: float | None) -> bool:
+    if not kph:
+      return False
+    if v_ego_kph is None:
+      return kph <= SLOWDOWN_CEILING_KPH
+    return kph <= max(v_ego_kph - SLOWDOWN_MARGIN_KPH, 30)
+
+  def path_ahead(self, v_ego_kph: float | None = None) -> dict:
     """Follows the most probable path from where we are, noting what branches off.
 
     Distances are measured from the car. PSD_Pos_Segmentlaenge counts down to
@@ -244,12 +269,12 @@ class PSD:
     # slow down, whether that is a bend on our own road or a turn off it.
     cand = []
     for seg in out["segments"]:
-      if seg["curve_kph"]:
+      if self._is_slowdown(seg["curve_kph"], v_ego_kph):
         cand.append({"kind": "bend", "at_m": seg["ends_at_m"],
                      "kph": seg["curve_kph"], "radius_m": seg["radius_m"],
                      "confirmed": True, "side": None, "angle": None})
     for br in out["branches"]:
-      if br["curve_kph"]:
+      if self._is_slowdown(br["curve_kph"], v_ego_kph):
         cand.append({"kind": "ramp" if br["ramp"] else "turn", "at_m": br["at_m"],
                      "kph": br["curve_kph"], "radius_m": br["radius_m"],
                      "confirmed": bool(br["probable"] and self.guidance),
@@ -260,8 +285,8 @@ class PSD:
     out["next_slowdown"] = cand[0] if cand else None
     return out
 
-  def snapshot(self) -> dict:
-    p = self.path_ahead()
+  def snapshot(self, v_ego_kph: float | None = None) -> dict:
+    p = self.path_ahead(v_ego_kph)
     return {
       "guidance": self.guidance,
       "country": self.country,

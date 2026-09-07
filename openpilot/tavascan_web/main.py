@@ -98,7 +98,7 @@ def collector() -> None:
       "scene": geometry.scene(sm["modelV2"]),
       "lanes": lanes,
       "osm": osm_view,
-      "psd": psd.snapshot(),
+      "psd": psd.snapshot(v_ego * CV.MS_TO_KPH),
       "undertake": ut,
       "left_lane": left,
       "merge_yield": mg,
