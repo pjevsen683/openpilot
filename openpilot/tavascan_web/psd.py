@@ -24,9 +24,16 @@ WHAT IS TRUSTED AND WHAT IS NOT
   Fahrspuren_Anzahl has since been checked and is trustworthy: it reads 3 on
   the three-lane Oestjyske Motorvej and 1 on the single-lane roads around it.
 
-  Curvature does NOT describe roundabouts or other tight corners -- see the note
-  by the fit. It is useful for the sweeping bends of a main road and nothing
-  tighter, which is a real limit on how much this can ever be worth.
+  Curvature does NOT describe roundabouts or other tight corners, and the car's
+  own route guidance being active makes no difference. Across two routes, of 39
+  corners driven at 7-16 m radius only 12 carried a PSD value low enough to read
+  as tight; the rest reported 49, 76, 132, 161, 168, 204 or the invalid 255 for
+  the same kind of corner. The field is useful for the sweeping bends of a main
+  road and nothing tighter, which is a real limit on how much this can be worth.
+
+  The attribute list in PSD_05 was checked as an alternative and does not carry
+  it either: the only candidate with enough samples predicted the distance to a
+  roundabout with a slope of 0.18 and a median error of 70 m.
 """
 import math
 import time
