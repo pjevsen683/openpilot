@@ -2,67 +2,91 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
 <title>Tavascan shadow</title>
 <style>
-  :root { color-scheme: dark; }
-  body { margin: 0; padding: 10px; background: #111; color: #eee;
-         font: 15px/1.4 -apple-system, system-ui, sans-serif; }
-  h2 { margin: 16px 0 6px; font-size: 12px; text-transform: uppercase;
-       letter-spacing: .08em; color: #888; font-weight: 600; }
-  .row { display: flex; gap: 8px; }
-  .card { flex: 1; background: #1c1c1c; border-radius: 10px; padding: 9px 11px; }
-  .big { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
-  .lbl { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: .06em; }
-  .verdict { border-radius: 10px; padding: 10px 12px; margin-top: 6px; background: #1c1c1c;
-             border-left: 4px solid #333; }
-  .on { background: #4a2a12; border-left-color: #ff9c3a; }
-  .why { color: #bbb; font-size: 13px; margin-top: 3px; }
-  canvas { width: 100%; display: block; background: #161616; border-radius: 10px; }
-  button.zb { background:#262626; color:#ccc; border:0; border-radius:5px;
-              padding:2px 7px; margin-left:3px; font-size:11px; }
-  .legend { font-size: 11px; color: #777; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
-  .sw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; vertical-align: 1px; }
-  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-  th { text-align: left; font-size: 11px; color: #888; font-weight: 600; padding: 3px 0; }
-  td { padding: 3px 0; border-top: 1px solid #262626; }
-  .none { color: #666; font-style: italic; }
-  label.tog { font-size: 12px; color: #aaa; margin-left: 10px; }
+  /* One iPhone screen, no scrolling. dvh so the Safari toolbars do not cut it off. */
+  :root { color-scheme: dark; --gap: 6px; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; overflow: hidden; }
+  body { margin: 0; background: #111; color: #eee; font: 13px/1.25 -apple-system, system-ui, sans-serif;
+         height: 100dvh; display: grid; grid-template-rows: auto 1fr auto auto;
+         gap: var(--gap); padding: calc(env(safe-area-inset-top) + 6px) 6px
+                                   calc(env(safe-area-inset-bottom) + 6px) 6px; }
+
+  .nums { display: grid; grid-template-columns: repeat(3, 1fr) auto; gap: var(--gap); align-items: center; }
+  .n { background: #1c1c1c; border-radius: 8px; padding: 4px 8px; }
+  .n b { display: block; font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .n s { display: block; text-decoration: none; font-size: 9px; color: #888;
+         text-transform: uppercase; letter-spacing: .07em; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: #333; }
+  .dot.on { background: #3ddc84; }
+
+  .views { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); min-height: 0; }
+  .view { position: relative; background: #161616; border-radius: 8px; overflow: hidden; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .tag { position: absolute; top: 4px; left: 6px; font-size: 9px; color: #777;
+         text-transform: uppercase; letter-spacing: .07em; pointer-events: none; }
+  .btns { position: absolute; top: 3px; right: 4px; display: flex; gap: 3px; }
+  .btns button { background: #2a2a2ad0; color: #bbb; border: 0; border-radius: 4px;
+                 padding: 2px 5px; font-size: 9px; }
+  .foot { position: absolute; bottom: 3px; left: 6px; right: 6px; font-size: 9px;
+          color: #999; pointer-events: none; }
+
+  .chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); }
+  .chip { background: #1c1c1c; border-radius: 8px; padding: 4px 7px; border-left: 3px solid #333;
+          min-width: 0; }
+  .chip.on { background: #4a2a12; border-left-color: #ff9c3a; }
+  .chip u { display: block; text-decoration: none; font-size: 9px; color: #999;
+            text-transform: uppercase; letter-spacing: .06em; }
+  .chip i { font-style: normal; font-size: 11px; color: #ddd; display: block;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status { font-size: 10px; color: #777; display: flex; gap: 10px; flex-wrap: wrap;
+            justify-content: space-between; }
 </style>
 </head>
 <body>
-<div id="app"><p class="none">connecting…</p></div>
-<script>
-// ---- drawing -------------------------------------------------------------
-// One frame everywhere: x metres ahead, y metres to the RIGHT. The radar's
-// opposite sign is flipped on the device, never here.
-//
-// The origin is our FRONT BUMPER, not the middle of the car, because that is
-// what dRel is measured from: opendbc subtracts DREL_FRONT_EDGE_MARGIN (1.5 m)
-// on top of the DBC offset to approximate the gap to the rear of the object.
-// So our body is drawn backwards from the origin and every other car is drawn
-// forwards from its own reading, leaving exactly dRel of empty road between
-// them. Drawing either one centred, as this did at first, made a car at 0 m
-// sit on top of our icon.
-const CAR_L = 4.6;        // metres, drawn to scale
-const CAR_W = 1.85;
-// A lane is ~3.7 m wide. At +/-18 m the ego lane lines landed 20 px from centre
-// while the car icon itself is 18 px wide, so the road collapsed onto the car and
-// read as decoration. +/-8 m puts them at 45 px, which reads as a lane.
-let viewHalf  = 8;        // metres drawn either side
-let viewAhead = 140;      // metres drawn up the screen
-let showMap = true;
+<div class="nums">
+  <div class="n"><s>speed</s><b id="v">–</b></div>
+  <div class="n"><s>set</s><b id="vs">–</b></div>
+  <div class="n"><s>would be</s><b id="dv">–</b></div>
+  <div class="dot" id="eng" title="engaged"></div>
+</div>
 
+<div class="views">
+  <div class="view">
+    <canvas id="bev"></canvas>
+    <div class="tag">around us</div>
+    <div class="btns">
+      <button id="bw">8 m</button><button id="ba">140</button><button id="bm">map</button>
+    </div>
+    <div class="foot" id="bevfoot"></div>
+  </div>
+  <div class="view">
+    <canvas id="route"></canvas>
+    <div class="tag">road ahead 500 m</div>
+    <div class="foot" id="routefoot"></div>
+  </div>
+</div>
+
+<div class="chips">
+  <div class="chip" id="c1"><u>undertaking</u><i>–</i></div>
+  <div class="chip" id="c2"><u>merge yield</u><i>–</i></div>
+  <div class="chip" id="c3"><u>left lane</u><i>–</i></div>
+</div>
+
+<div class="status"><span id="s1">connecting…</span><span id="s2"></span></div>
+<script>
 function draw(cv, d) {
   const ctx = cv.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth, h = Math.round(w * 1.25);
-  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
-  cv.style.height = h + "px";
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const EGO_Y = h - 62;   // leaves room for our own body below the origin
+  const EGO_Y = h - Math.min(62, h * 0.18);   // leaves room for our own body below the origin
   const X = y => w / 2 + (y / viewHalf) * (w / 2);
   const Y = x => EGO_Y - (x / viewAhead) * (EGO_Y - 10);
 
@@ -117,52 +141,11 @@ function draw(cv, d) {
   ctx.fillStyle = "#3ddc84";
   ctx.fillRect(X(0) - ew / 2, EGO_Y, ew, eh);
 }
-
-// ---- panels --------------------------------------------------------------
-const kph = v => v === null || v === undefined ? "–" : v.toFixed(0);
-
-function verdict(name, r) {
-  const cap = r.active ? ` &rarr; cap ${kph(r.cap * 3.6)} km/h` : "";
-  return `<div class="verdict ${r.active ? "on" : ""}"><b>${name}</b>${cap}
-            <div class="why">${r.why}</div></div>`;
-}
-
-function osmPanel(o) {
-  if (!o) return '<p class="none">no map layer</p>';
-  const L = o.live || {}, maps = o.maps || {}, ra = o.road_ahead || {};
-  const head = `<div class="card">
-      <div>limit <b>${L.speed_limit_kph ?? "–"}</b> km/h
-        &nbsp; ahead <b>${L.ahead_kph ?? "–"}</b> km/h
-        ${L.ahead_distance_m != null ? `in ${L.ahead_distance_m.toFixed(0)} m` : ""}</div>
-      <div class="why">${L.road_name ?? "no road name"} &middot;
-        offline maps: ${maps.present ? maps.files + " files" : "NONE DOWNLOADED"} &middot;
-        road geometry: ${ra.available ? ra.points.length + " points" : "none"}</div></div>`;
-  const keys = Object.keys(o.params || {}).sort();
-  if (!keys.length) return head + '<p class="none">mapd publishes no params right now</p>';
-  const rows = keys.map(k => {
-    let v = o.params[k];
-    if (v && v._list) v = `${v.count} points`;
-    else if (v && v._truncated) v = `${v.bytes} bytes`;
-    else v = JSON.stringify(v);
-    if (v.length > 80) v = v.slice(0, 80) + "…";
-    return `<tr><td>${k}</td><td>${v}</td></tr>`;
-  }).join("");
-  return head + `<table><tr><th>param</th><th>value</th></tr>${rows}</table>`;
-}
-
-// ---- route map -----------------------------------------------------------
-// Draws the PSD segment chain as an actual road: walk it in 2 m steps, turning
-// by ds/R using each segment's curvature, and fit whatever comes out to the
-// canvas. Branches are drawn as stubs at their own angle. This is the car's
-// map, so it shows what is coming well past anything the camera can see.
-const ROUTE_M = 500;
-
 function drawRoute(cv, psd) {
   const ctx = cv.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth, h = 260;
-  if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
-  cv.style.height = h + "px";
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
   const segs = (psd && psd.segments) || [];
@@ -257,111 +240,79 @@ function drawRoute(cv, psd) {
     ctx.fillText(ns.kph + " km/h", PX(p) + 12, PY(p) - 6);
   }
 }
+// One frame everywhere: x metres ahead, y metres to the RIGHT. The radar's
+// opposite sign is flipped on the device, never here.
+//
+// The origin is our FRONT BUMPER, not the middle of the car, because that is
+// what dRel is measured from: opendbc subtracts DREL_FRONT_EDGE_MARGIN (1.5 m)
+// on top of the DBC offset to approximate the gap to the rear of the object.
+const CAR_L = 4.6;        // metres, drawn to scale
+const CAR_W = 1.85;
+let viewHalf = 8, viewAhead = 140, showMap = true;
+const ROUTE_M = 500;
 
-function psdPanel(p) {
-  if (!p) return '<p class="none">no PSD</p>';
-  if (p.age_s === null || p.age_s === undefined)
-    return '<p class="none">the car is not broadcasting PSD</p>';
-  const ns = p.next_slowdown;
-  const nsBox = ns
-    ? `<div class="verdict ${ns.confirmed ? "on" : ""}">
-        <b>next slowdown</b> &mdash; ${ns.kind}${ns.side ? " " + ns.side : ""}
-        in <b>${ns.at_m} m</b>, radius ${ns.radius_m} m &rarr; <b>${ns.kph} km/h</b>
-        <div class="why">${ns.confirmed
-          ? "on our path"
-          : "a turn we may or may not take &mdash; the car's own guidance is off, so nothing here predicts where you are going"}
-          ${ns.angle ? "&middot; " + ns.angle + "&deg;" : ""}
-          &middot; radius is an order of magnitude &middot; distance from the car, 2 m steps</div></div>`
-    : '<div class="verdict"><b>next slowdown</b> &mdash; nothing ahead</div>';
-  const here = p.here;
-  const head = `<div class="card">
-      <div>${here ? `${here.category}, <b>${here.lanes}</b> lane(s)` : "position segment unknown"}
-        &nbsp;&middot;&nbsp; guidance <b>${p.guidance === null ? "?" : p.guidance ? "on" : "off"}</b>
-        &nbsp;&middot;&nbsp; ${p.segments_known} segments known</div>
-      <div class="why">${here && here.remaining_m != null ? here.remaining_m + " m left of this segment &middot; " : ""}branch side polarity unconfirmed &middot; PSD ${p.age_s}s old
-        &middot; own lane reads ${p.pos_lane_raw} (not populated by the car)</div></div>`;
-  return nsBox + head;
+const kph = v => v === null || v === undefined ? "–" : v.toFixed(0);
+const set = (id, html) => { document.getElementById(id).innerHTML = html; };
+
+function chip(id, label, on, text) {
+  const el = document.getElementById(id);
+  el.className = "chip" + (on ? " on" : "");
+  el.innerHTML = `<u>${label}</u><i>${text}</i>`;
 }
 
 function render(d) {
-  const app = document.getElementById("app");
-  if (!d.ready) { app.innerHTML = '<p class="none">waiting for the car…</p>'; return; }
+  if (!d.ready) { set("s1", "waiting for the car…"); return; }
   const delta = d.delta_kph;
+  set("v", kph(d.v_ego_kph));
+  set("vs", kph(d.v_cruise_kph));
+  document.getElementById("dv").innerHTML = delta === null ? "–" : delta.toFixed(0);
+  document.getElementById("dv").style.color = delta === null ? "#666" : "#ff9c3a";
+  document.getElementById("eng").className = "dot" + (d.engaged ? " on" : "");
 
-  if (!document.getElementById("bev")) {
-    app.innerHTML = `
-      <div class="row" id="nums"></div>
-      <div id="leftlane"></div>
-      <h2>bird's eye
-        <label class="tog"><input type="checkbox" id="mapchk" checked> map</label>
-        <span class="tog">width <button class="zb" data-w="4">4</button><button class="zb" data-w="8">8</button><button class="zb" data-w="16">16</button> m</span>
-        <span class="tog">ahead <button class="zb" data-a="60">60</button><button class="zb" data-a="140">140</button> m</span>
-      </h2>
-      <canvas id="bev"></canvas>
-      <div class="legend" id="diag"></div>
-      <div class="legend">
-        <span><i class="sw" style="background:#3ddc84"></i> us</span>
-        <span><i class="sw" style="background:#46b3ff"></i> radar object</span>
-        <span><i class="sw" style="background:#ff9c3a"></i> rule target</span>
-        <span><i class="sw" style="background:#d8d8d8"></i> lane line</span>
-        <span><i class="sw" style="background:#6b4a2a"></i> road edge</span>
-        <span><i class="sw" style="background:#2b6cb0"></i> map road</span>
-      </div>
-      <h2>rules (shadow only &mdash; nothing is applied)</h2><div id="rules"></div>
-      <h2>road ahead (PSD &mdash; the car's own map, 500 m)</h2>
-      <canvas id="route"></canvas>
-      <div class="legend">
-        <span><i class="sw" style="background:#3ddc84"></i> us</span>
-        <span><i class="sw" style="background:#ff9c3a"></i> ramp</span>
-        <span><i class="sw" style="background:#46b3ff"></i> other turning</span>
-        <span>solid = the car expects us to take it &middot; which side a turning leaves on is inferred, not measured</span>
-      </div>
-      <div id="psd"></div>
-      <h2>map layer</h2><div id="osm"></div>
-      <h2>lane</h2><div id="lane"></div>`;
-    document.getElementById("mapchk").onchange = e => { showMap = e.target.checked; };
-    document.querySelectorAll(".zb").forEach(b => b.onclick = () => {
-      if (b.dataset.w) viewHalf = +b.dataset.w;
-      if (b.dataset.a) viewAhead = +b.dataset.a;
-    });
-  }
+  const short = s => (s || "").replace(/ -- .*/, "").replace(/\(.*\)/, "").trim();
+  chip("c1", "undertaking", d.undertake.active,
+       d.undertake.active ? `cap ${kph(d.undertake.cap * 3.6)} km/h` : short(d.undertake.why));
+  chip("c2", "merge yield", d.merge_yield.active,
+       d.merge_yield.active ? `cap ${kph(d.merge_yield.cap * 3.6)} km/h` : short(d.merge_yield.why));
+  const L = d.left_lane || {}, seen = L.nearest;
+  chip("c3", "left lane", !!L.slower,
+       seen ? `${kph(seen.v_abs * 3.6)} km/h · ${seen.d.toFixed(0)} m · ${L.diff_kph > 0 ? "+" : ""}${L.diff_kph}`
+            : "nothing in range");
 
-  document.getElementById("nums").innerHTML = `
-    <div class="card"><div class="lbl">speed</div><div class="big">${kph(d.v_ego_kph)}</div></div>
-    <div class="card"><div class="lbl">set</div><div class="big">${kph(d.v_cruise_kph)}</div></div>
-    <div class="card"><div class="lbl">would be</div>
-      <div class="big" style="color:${delta === null ? "#666" : "#ff9c3a"}">
-        ${delta === null ? "no change" : delta.toFixed(0) + " km/h"}</div></div>`;
+  // context under each view
+  const lanes = d.lanes || {};
+  set("bevfoot", `${(d.points || []).length} objects · `
+      + `${lanes.rightmost ? "rightmost" : lanes.leftmost ? "leftmost" : "middle"} · `
+      + `edges ${lanes.left_edge_m ?? "?"}/${lanes.right_edge_m ?? "?"} m`);
 
-  const L2 = d.left_lane || {};
-  const seen = L2.nearest;
-  document.getElementById("leftlane").innerHTML = `<div class="verdict ${L2.slower ? "on" : ""}">
-      <b>left lane</b> &mdash; ${seen
-        ? `${(seen.v_abs * 3.6).toFixed(0)} km/h at ${seen.d.toFixed(0)} m,
-           ${seen.y.toFixed(1)} m across
-           &nbsp;<b>${L2.diff_kph > 0 ? "+" : ""}${L2.diff_kph} km/h</b> vs us`
-        : "nothing in range"}
-      <div class="why">${L2.count} object(s) in the left lane &middot;
-        ${L2.slower ? "slower than us" : seen ? "not slower, so no reason to hold back" : "the rule has nothing to act on"}</div></div>`;
-  document.getElementById("rules").innerHTML =
-    verdict("Undertaking guard", d.undertake) + verdict("Merge yield", d.merge_yield);
-  document.getElementById("psd").innerHTML = psdPanel(d.psd);
-  drawRoute(document.getElementById("route"), d.psd);
-  document.getElementById("osm").innerHTML = osmPanel(d.osm);
-  const L = d.lanes;
-  document.getElementById("lane").innerHTML = `<div class="card">
-      rightmost: <b>${L.rightmost ?? "?"}</b> &nbsp; leftmost: <b>${L.leftmost ?? "?"}</b>
-      <div class="why">road edge left ${L.left_edge_m ?? "?"} m, right ${L.right_edge_m ?? "?"} m
-        &middot; radar ${d.radar_age_s ?? "?"} s old &middot; engaged ${d.engaged}</div></div>`;
+  const p = d.psd || {}, ns = p.next_slowdown, here = p.here;
+  set("routefoot", ns
+      ? `<span style="color:#ff9c3a">${ns.kind}${ns.side ? " " + ns.side : ""} in ${ns.at_m} m → ${ns.kph} km/h</span>`
+      : (here ? `${here.category} · ${here.lanes} lane(s)` : "no route"));
 
-  const sc = d.scene || {};
-  const lls = (sc.lane_lines || []).map(l => l ? `${l.prob}${l.confident ? "" : "?"}` : "–").join(" ");
-  document.getElementById("diag").innerHTML =
-    `lane lines: ${lls || "none received"} &middot; edges: ${(sc.road_edges || []).filter(Boolean).length}` +
-    ` &middot; radar objects: ${(d.points || []).length}`;
+  const osm = d.osm || {}, live = osm.live || {};
+  set("s1", `${live.road_name || "–"}${live.speed_limit_kph ? " · " + live.speed_limit_kph + " km/h" : ""}`
+      + `${here && here.remaining_m != null ? " · " + here.remaining_m + " m to segment end" : ""}`);
+  set("s2", `radar ${d.radar_age_s ?? "?"}s · psd ${p.age_s ?? "?"}s`
+      + ` · guidance ${p.guidance === null || p.guidance === undefined ? "?" : p.guidance ? "on" : "off"}`
+      + " · shadow only");
 
   draw(document.getElementById("bev"), d);
+  drawRoute(document.getElementById("route"), p);
 }
+
+document.getElementById("bw").onclick = e => {
+  viewHalf = viewHalf === 4 ? 8 : viewHalf === 8 ? 16 : 4;
+  e.target.textContent = viewHalf + " m";
+};
+document.getElementById("ba").onclick = e => {
+  viewAhead = viewAhead === 60 ? 140 : 60;
+  e.target.textContent = viewAhead;
+};
+document.getElementById("bm").onclick = e => {
+  showMap = !showMap;
+  e.target.style.color = showMap ? "#bbb" : "#555";
+};
 
 async function tick() {
   try { render(await (await fetch("/data.json", {cache: "no-store"})).json()); }
