@@ -81,10 +81,12 @@ def collector() -> None:
     lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
     ut = shadow.undertake(points, v_ego, lanes["rightmost"])
     left = shadow.left_lane_report(points, v_ego)
+    psd_snap = psd.snapshot(v_ego * CV.MS_TO_KPH)
+    turn = shadow.turn_ahead(psd_snap, v_ego)
     mg = shadow.merge_yield(points, v_ego, lanes["rightmost"])
 
     v_cruise = sm["carState"].cruiseState.speed
-    caps = [r["cap"] for r in (ut, mg) if r["cap"] is not None]
+    caps = [r["cap"] for r in (ut, mg, turn) if r["cap"] is not None]
     combined = min(caps) if caps else None
 
     snap = {
@@ -98,7 +100,8 @@ def collector() -> None:
       "scene": geometry.scene(sm["modelV2"]),
       "lanes": lanes,
       "osm": osm_view,
-      "psd": psd.snapshot(v_ego * CV.MS_TO_KPH),
+      "psd": psd_snap,
+      "turn_ahead": turn,
       "undertake": ut,
       "left_lane": left,
       "merge_yield": mg,
@@ -111,7 +114,7 @@ def collector() -> None:
       _snapshot.clear()
       _snapshot.update(snap)
 
-    active = ut["active"] or mg["active"] or bool(left["slower"])
+    active = ut["active"] or mg["active"] or turn["active"] or bool(left["slower"])
     now = time.monotonic()
     period = ACTIVE_PERIOD_S if (active or was_active) else HEARTBEAT_S
     if now - last_beat >= period:
@@ -141,6 +144,7 @@ def trace_record(snap: dict) -> dict:
     "undertake": snap.get("undertake"),
     "left_lane": snap.get("left_lane"),
     "merge_yield": snap.get("merge_yield"),
+    "turn_ahead": snap.get("turn_ahead"),
     "points": snap.get("points"),
     "lanes": snap.get("lanes"),
     "lane_probs": [l["prob"] if l else None for l in (sc.get("lane_lines") or [])],

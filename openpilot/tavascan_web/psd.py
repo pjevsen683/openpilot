@@ -215,7 +215,15 @@ class PSD:
                               # right in 29 of 33.
                               "bend_dir": 1 if cur["curv_end_vz"] else -1,
                               "bend_dir_start": 1 if cur["curv_start_vz"] else -1,
-                              "curve_kph": speed_for_radius(r_end)})
+                              "curve_kph": speed_for_radius(r_end),
+                              # How sharply this segment leaves the one before it.
+                              # For a segment ahead of us that is the turn we are
+                              # expected to make, at the distance the segment
+                              # starts. The branch we take is followed as the main
+                              # path, so it never appears in "branches" -- which is
+                              # why the turn has to be read off the path itself.
+                              "turn_angle": cur["branch_angle"],
+                              "turn_side": "left" if cur["branch_dir_bit"] else "right"})
       nxt = by_prev.get(cur["id"], [])
       if not nxt:
         break

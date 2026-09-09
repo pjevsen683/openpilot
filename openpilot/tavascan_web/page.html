@@ -34,7 +34,7 @@
   .foot { position: absolute; bottom: 3px; left: 6px; right: 6px; font-size: 9px;
           color: #999; pointer-events: none; }
 
-  .chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); }
+  .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); }
   .chip { background: #1c1c1c; border-radius: 8px; padding: 4px 7px; border-left: 3px solid #333;
           min-width: 0; }
   .chip.on { background: #4a2a12; border-left-color: #ff9c3a; }
@@ -74,6 +74,7 @@
   <div class="chip" id="c1"><u>undertaking</u><i>–</i></div>
   <div class="chip" id="c2"><u>merge yield</u><i>–</i></div>
   <div class="chip" id="c3"><u>left lane</u><i>–</i></div>
+  <div class="chip" id="c4"><u>turn ahead</u><i>–</i></div>
 </div>
 
 <div class="status"><span id="s1">connecting…</span><span id="s2"></span></div>
@@ -141,7 +142,7 @@ function draw(cv, d) {
   ctx.fillStyle = "#3ddc84";
   ctx.fillRect(X(0) - ew / 2, EGO_Y, ew, eh);
 }
-function drawRoute(cv, psd) {
+function drawRoute(cv, psd, lanePos, turnAt) {
   const ctx = cv.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight;
@@ -155,7 +156,7 @@ function drawRoute(cv, psd) {
   }
 
   // walk the chain in the car's frame: x forward, y right, heading in radians
-  const pts = [{ s: 0, x: 0, y: 0 }];
+  const pts = [{ s: 0, x: 0, y: 0, th: 0, lanes: (segs[0] && segs[0].lanes) || 1 }];
   const marks = [];
   let x = 0, y = 0, th = 0, travelled = 0;
   for (const sg of segs) {
@@ -172,7 +173,7 @@ function drawRoute(cv, psd) {
       th += k * 2;
       x += Math.cos(th) * 2; y += Math.sin(th) * 2;
       travelled += 2;
-      pts.push({ s: travelled, x, y });
+      pts.push({ s: travelled, x, y, th, lanes: sg.lanes || 1 });
     }
     if (travelled >= ROUTE_M) break;
   }
@@ -186,14 +187,22 @@ function drawRoute(cv, psd) {
   let minx = 0, maxx = 0, miny = 0, maxy = 0;
   for (const p of pts) { minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x);
                          miny = Math.min(miny, p.y); maxy = Math.max(maxy, p.y); }
-  const pad = 28;
-  const sc = Math.min((w - 2 * pad) / Math.max(20, maxy - miny),
-                      (h - 2 * pad) / Math.max(40, maxx - minx));
-  // A road that runs mostly straight would otherwise sit as a ribbon down one
-  // edge, so centre whatever lateral extent it has.
-  const offx = (w - (maxy - miny) * sc) / 2;
-  const PX = p => offx + (p.y - miny) * sc;
-  const PY = p => h - pad - (p.x - minx) * sc;
+  // leave room for the width of the road itself, not just its centreline
+  const halfRoad = Math.max(1, ...pts.map(p => p.lanes || 1)) * LANE_W / 2;
+  miny -= halfRoad; maxy += halfRoad;
+  const pad = 26;
+  // Along and across the road are scaled separately. At one scale, 400 m of road
+  // in this cell leaves a three-lane carriageway about 9 px wide, which is not a
+  // road anyone can read. Across is therefore stretched until a lane is legible,
+  // capped so bends are not blown out of all proportion. Distances up the screen
+  // stay true; sideways is a schematic, and the factor is shown so nobody reads
+  // a gentle curve as a hairpin.
+  const scY = (h - 2 * pad) / Math.max(40, maxx - minx);
+  const spread = Math.max(4, maxy - miny);
+  const scX = Math.min((w - 2 * pad) / spread, Math.max(scY, 22 / LANE_W));
+  const offx = (w - spread * scX) / 2;
+  const PX = p => offx + (p.y - miny) * scX;
+  const PY = p => h - pad - (p.x - minx) * scY;
 
   // distance ticks along the road
   ctx.strokeStyle = "#2a2a2a"; ctx.fillStyle = "#555"; ctx.font = "10px system-ui";
@@ -203,11 +212,29 @@ function drawRoute(cv, psd) {
     ctx.fillText(p.s + " m", PX(p) + 6, PY(p) + 3);
   }
 
-  // the road
-  ctx.strokeStyle = "#d8d8d8"; ctx.lineWidth = 5; ctx.lineJoin = "round";
-  ctx.beginPath();
-  pts.forEach((p, i) => i ? ctx.lineTo(PX(p), PY(p)) : ctx.moveTo(PX(p), PY(p)));
-  ctx.stroke();
+  // the road, drawn with as many lanes as PSD says it has. x is forward and y is
+  // right, so the normal pointing right is (-sin th, cos th) and an offset of o
+  // metres lands at (x - sin(th) o, y + cos(th) o).
+  const off = (p, o) => ({ x: p.x - Math.sin(p.th) * o, y: p.y + Math.cos(p.th) * o });
+  const maxLanes = Math.max(1, ...pts.map(p => p.lanes || 1));
+  ctx.lineJoin = "round";
+  for (let i = 0; i <= maxLanes; i++) {
+    const edge = i === 0 || i === maxLanes;
+    ctx.strokeStyle = edge ? "#d8d8d8" : "#5a5a5a";
+    ctx.lineWidth = edge ? 2.5 : 1.2;
+    ctx.setLineDash(edge ? [] : [5, 5]);
+    ctx.beginPath();
+    let started = false;
+    for (const p of pts) {
+      const L = p.lanes || 1;
+      if (i > L) { started = false; continue; }   // lane does not exist here
+      const q = off(p, (i - L / 2) * LANE_W);
+      started ? ctx.lineTo(PX(q), PY(q)) : ctx.moveTo(PX(q), PY(q));
+      started = true;
+    }
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
 
   // branches as stubs at their own angle
   for (const m of marks) {
@@ -226,9 +253,35 @@ function drawRoute(cv, psd) {
     ctx.stroke(); ctx.setLineDash([]);
   }
 
-  // us
+  // us, placed in the lane we believe we are in. PSD_Pos_Fahrspur is not
+  // populated by the car, so the lane comes from the model instead: rightmost
+  // and leftmost are read off laneLineProbs. Anything else we do not know, and
+  // the marker sits in the middle with a ring to say so.
+  const L0 = pts[0].lanes || 1;
+  let idx = (L0 - 1) / 2, known = false;
+  if (lanePos && L0 > 1) {
+    if (lanePos.rightmost) { idx = L0 - 1; known = true; }
+    else if (lanePos.leftmost) { idx = 0; known = true; }
+  } else if (L0 === 1) { known = true; }
+  const me = off(pts[0], (idx + 0.5 - L0 / 2) * LANE_W);
   ctx.fillStyle = "#3ddc84";
-  ctx.beginPath(); ctx.arc(PX(pts[0]), PY(pts[0]), 6, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(PX(me), PY(me), 6, 0, 7); ctx.fill();
+  if (!known) {
+    ctx.strokeStyle = "#3ddc8480"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(PX(me), PY(me), 11, 0, 7); ctx.stroke();
+  }
+
+  if (scX > scY * 1.5) {
+    ctx.fillStyle = "#555"; ctx.font = "9px system-ui";
+    ctx.fillText("sideways \u00d7" + (scX / scY).toFixed(0), 4, h - 5);
+  }
+
+  // the turn we are expected to make, marked where it starts
+  if (turnAt && turnAt.at_m > 0) {
+    const p = pts.reduce((a, q) => Math.abs(q.s - turnAt.at_m) < Math.abs(a.s - turnAt.at_m) ? q : a, pts[0]);
+    ctx.strokeStyle = turnAt.active ? "#ff9c3a" : "#777"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(PX(p), PY(p), 7, 0, 7); ctx.stroke();
+  }
 
   // the next slowdown, marked on the road
   const ns = psd.next_slowdown;
@@ -250,6 +303,7 @@ const CAR_L = 4.6;        // metres, drawn to scale
 const CAR_W = 1.85;
 let viewHalf = 8, viewAhead = 140, showMap = true;
 const ROUTE_M = 500;
+const LANE_W = 3.5;   // metres, for drawing only
 
 const kph = v => v === null || v === undefined ? "–" : v.toFixed(0);
 const set = (id, html) => { document.getElementById(id).innerHTML = html; };
@@ -274,6 +328,10 @@ function render(d) {
        d.undertake.active ? `cap ${kph(d.undertake.cap * 3.6)} km/h` : short(d.undertake.why));
   chip("c2", "merge yield", d.merge_yield.active,
        d.merge_yield.active ? `cap ${kph(d.merge_yield.cap * 3.6)} km/h` : short(d.merge_yield.why));
+  const T = d.turn_ahead || {};
+  chip("c4", "turn ahead", T.active,
+       T.active ? `${kph(T.cap * 3.6)} km/h · ${T.at_m} m`
+                : (T.at_m ? `${T.angle}° ${T.side} · ${T.at_m} m` : "none"));
   const L = d.left_lane || {}, seen = L.nearest;
   chip("c3", "left lane", !!L.slower,
        seen ? `${kph(seen.v_abs * 3.6)} km/h · ${seen.d.toFixed(0)} m · ${L.diff_kph > 0 ? "+" : ""}${L.diff_kph}`
@@ -298,7 +356,7 @@ function render(d) {
       + " · shadow only");
 
   draw(document.getElementById("bev"), d);
-  drawRoute(document.getElementById("route"), p);
+  drawRoute(document.getElementById("route"), p, lanes, T);
 }
 
 document.getElementById("bw").onclick = e => {
