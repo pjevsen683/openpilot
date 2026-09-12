@@ -34,21 +34,32 @@ MQTT_PORT = int(os.getenv("TAVASCAN_MQTT_PORT", "1883"))
 INTERVAL_S = float(os.getenv("TAVASCAN_INTERVAL", "60"))
 SAMPLE_S = float(os.getenv("TAVASCAN_SAMPLE_S", "6"))
 
-# SoC is calibrated linearly against the car's own display: soc_pct = SOC_A * raw + SOC_B.
-# Fitted on six readings of the car's display during a single long charge at
-# constant power, which gave a clean span from 40 to 85 %:
-#   raw 493->40, 699->53, 785->57, 925->67, 1114->80, 1195->85
-# Largest deviation 1.3 pp. The slopes between neighbouring points (0.047-0.071)
-# vary without any systematic trend, so a straight line is the right model -- the
-# scatter is rounding noise from the display's whole percentages.
-# The offset of about +11 % is real, not an artefact: ratios in the raw value do
-# not match ratios in SoC, which they would if SoC were simply energy/capacity.
-# There is a reserve below the display's zero.
-# OPEN: the extrapolation above 85 % and below 25 % is untested -- which is why
-# the raw value is also exposed as its own sensor, so it can be logged and
-# refitted over a wider range.
-SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.064640"))
-SOC_B = float(os.getenv("TAVASCAN_SOC_B", "7.53"))
+# SoC is calibrated against the car's own display: a quadratic in the raw counter.
+# A straight line was good enough over the range it was fitted on, but it read low
+# at the top -- 98.3 % with the car showing 100 %. A full charge gave the missing
+# end point: the counter settled at 1405 and stayed there for over twenty minutes,
+# so that is genuinely full rather than a display rounding up early.
+#
+#   raw   car    line    quadratic
+#   493    40    39.1      40.0
+#   699    53    52.6      52.5
+#   785    57    58.3      57.9
+#   925    67    67.5      66.9
+#  1114    80    80.0      79.6
+#  1195    85    85.3      85.1
+#  1405   100    99.2     100.1
+#
+# Worst error falls from 1.3 to 0.9 pp, and the top end stops reading low. The
+# curve rises throughout the usable range -- its turning point is at raw -3457,
+# nowhere near -- so it cannot fold back on itself at low charge.
+#
+# OPEN: still nothing below 40 %. At raw 0 the fit says 12.7 %, which is the
+# reserve under the display's zero, but that is extrapolation and a quadratic
+# extrapolates worse than a line. The raw counter is published as its own sensor
+# so a low-charge point can be picked up if the car is ever run down that far.
+SOC_A2 = float(os.getenv("TAVASCAN_SOC_A2", "7.478e-6"))
+SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.051708"))
+SOC_B = float(os.getenv("TAVASCAN_SOC_B", "12.672"))
 
 # The same state is also written here every cycle, so the offroad web page can
 # show the car without sampling CAN a second time -- and so the last reading
@@ -217,7 +228,7 @@ def main() -> None:
     state = {
       "awake": awake,
       "raw": raw,
-      "soc_pct": round(min(100.0, max(0.0, SOC_A * raw + SOC_B)), 1) if raw else None,
+      "soc_pct": round(min(100.0, max(0.0, SOC_A2 * raw * raw + SOC_A * raw + SOC_B)), 1) if raw else None,
       "odometer_km": int(latest["odometer_km"]) if "odometer_km" in latest else None,
       "climate_w": int(latest["climate_w"]) if "climate_w" in latest else None,
       "locked": latest.get("locked"),
