@@ -85,7 +85,11 @@ def collector() -> None:
     turn = shadow.turn_ahead(psd_snap, v_ego)
     mg = shadow.merge_yield(points, v_ego, lanes["rightmost"])
 
-    v_cruise = sm["carState"].cruiseState.speed
+    # carState.cruiseState.speed is the CAR's own cruise setting and reads zero
+    # throughout when openpilot does longitudinal. vCruise is openpilot's own set
+    # speed, already in km/h. Checked against a whole drive: cruiseState.speed was
+    # 0 for all 102 segments while vCruise tracked every change.
+    v_cruise_kph = sm["carState"].vCruise
     caps = [r["cap"] for r in (ut, mg, turn) if r["cap"] is not None]
     combined = min(caps) if caps else None
 
@@ -93,7 +97,7 @@ def collector() -> None:
       "ready": True,
       "t": round(time.time(), 1),
       "v_ego_kph": round(v_ego * CV.MS_TO_KPH, 1),
-      "v_cruise_kph": round(v_cruise * CV.MS_TO_KPH, 1) if v_cruise else None,
+      "v_cruise_kph": round(v_cruise_kph, 1) if 0 < v_cruise_kph < 250 else None,
       "engaged": bool(sm["carState"].cruiseState.enabled),
       "radar_age_s": round(radar_age, 1) if radar_age is not None else None,
       "points": points,
