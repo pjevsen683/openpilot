@@ -26,32 +26,6 @@ UT_MIN_RANGE = 3.0
 UT_LAT = (-6.0, -2.0)                 # m, left lane (negative is left)
 UT_SLIP = 4 * CV.KPH_TO_MS            # tolerated speed excess
 
-# --- Merge yield ------------------------------------------------------------
-# A vehicle on the right that is slower than us is only interesting when there
-# is no lane to our right -- then it is on a slip road or hard shoulder rather
-# than simply being overtaken lawfully.
-#
-# Measured on a day of driving before this condition existed: the rule fired 413
-# times, 364 of them while we were NOT rightmost, i.e. while lawfully passing
-# someone in the right-hand lane. 94 of the 96 heaviest interventions were in
-# that state, the worst asking for 69 km/h off while overtaking a car exiting at
-# 53 km/h. Requiring rightmost removes 88 % of the firings and 98 % of the
-# heavy ones.
-MG_MIN_SPEED = 60 * CV.KPH_TO_MS
-MG_MAX_RANGE = 60.0
-MG_LAT = (2.0, 6.0)                   # m, right lane
-MG_SLIP = 2 * CV.KPH_TO_MS
-# Something far slower than us is not merging traffic. It is a digger behind a
-# roadworks barrier, a parked van on the verge, or a vehicle on a service road
-# running alongside. Real merging traffic is accelerating towards our speed.
-MG_MAX_DIFF = 30 * CV.KPH_TO_MS
-# Even for genuine merging traffic, matching its speed is the wrong target: we
-# do not need to travel at the speed of a car on the ramp, only to avoid
-# arriving at the merge point beside it. This bounds how much the rule may ask
-# for, so a plausible target cannot produce an implausible intervention.
-MG_MAX_CUT = 15 * CV.KPH_TO_MS
-
-
 def _closest(points: list, lat: tuple, max_range: float):
   """Closest point whose lateral offset falls inside the given lane window."""
   best = None
@@ -87,55 +61,6 @@ def undertake(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
   cap = max(o["v_abs"] + UT_SLIP, UT_MIN_SPEED)
   why = f"left lane {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m"
   return {"active": True, "cap": cap, "why": why, "target": o}
-
-
-def merge_yield(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
-  """Would we be closing on a slower vehicle to our right, likely merging?"""
-  o = _closest(points, MG_LAT, MG_MAX_RANGE)
-
-  # Unknown counts as no. Without knowing we are rightmost, a vehicle on the
-  # right is most likely one we are lawfully passing.
-  if rightmost_lane is not True:
-    return {"active": False, "cap": None, "why": "not in the rightmost lane", "target": o}
-  if v_ego < MG_MIN_SPEED:
-    return {"active": False, "cap": None, "why": "below 60 km/h", "target": o}
-  if o is None:
-    return {"active": False, "cap": None, "why": "no vehicle on the right", "target": None}
-  if o["v_abs"] + MG_SLIP >= v_ego:
-    return {"active": False, "cap": None, "why": "right side is not slower", "target": o}
-
-  diff = v_ego - o["v_abs"]
-  if diff > MG_MAX_DIFF:
-    return {"active": False, "cap": None,
-            "why": f"right side is {diff * CV.MS_TO_KPH:.0f} km/h slower -- roadside, not merging",
-            "target": o}
-
-  cap = max(o["v_abs"] + MG_SLIP, v_ego - MG_MAX_CUT, MG_MIN_SPEED)
-  return {"active": True, "cap": cap,
-          "why": f"right {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m", "target": o}
-
-
-def left_lane_report(points: list, v_ego: float) -> dict:
-  """What the undertaking rule can see to its left, whether or not it acts.
-
-  The rule almost never fires, and the reason turned out to be the traffic
-  rather than the code: on a motorway drive, 29 % of frames above 70 km/h had a
-  left-lane object, but only about one in ten of those was slower than us. The
-  left lane overtakes; that is what it is for.
-
-  That makes the rule hard to trust from the outside, because silence looks the
-  same whether it is working or broken. This reports the nearest left-lane
-  object continuously so silence can be told apart from blindness.
-  """
-  left = [p for p in points if UT_LAT[0] < p["y"] < UT_LAT[1] and UT_MIN_RANGE < p["d"] < UT_MAX_RANGE]
-  out = {"count": len(left), "nearest": None, "slower": None, "diff_kph": None}
-  if not left:
-    return out
-  o = min(left, key=lambda p: p["d"])
-  out["nearest"] = o
-  out["diff_kph"] = round((o["v_abs"] - v_ego) * CV.MS_TO_KPH, 1)
-  out["slower"] = bool(o["v_abs"] + UT_SLIP < v_ego)
-  return out
 
 
 # --- Turn ahead -------------------------------------------------------------

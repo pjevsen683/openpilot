@@ -34,7 +34,7 @@
   .foot { position: absolute; bottom: 3px; left: 6px; right: 6px; font-size: 9px;
           color: #999; pointer-events: none; }
 
-  .chips { display: grid; grid-template-columns: repeat(4, 1fr); gap: var(--gap); }
+  .chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); }
   .chip { background: #1c1c1c; border-radius: 8px; padding: 4px 7px; border-left: 3px solid #333;
           min-width: 0; }
   .chip.on { background: #4a2a12; border-left-color: #ff9c3a; }
@@ -72,7 +72,6 @@
 
 <div class="chips">
   <div class="chip" id="c1"><u>undertaking</u><i>–</i></div>
-  <div class="chip" id="c2"><u>merge yield</u><i>–</i></div>
   <div class="chip" id="c3"><u>left lane</u><i>–</i></div>
   <div class="chip" id="c4"><u>turn ahead</u><i>–</i></div>
 </div>
@@ -121,8 +120,7 @@ function draw(cv, d) {
   });
 
   // radar objects
-  const tgt = [d.undertake, d.merge_yield].filter(r => r.active && r.target)
-                                          .map(r => r.target.id);
+  const tgt = [d.undertake].filter(r => r.active && r.target).map(r => r.target.id);
   (d.points || []).forEach(p => {
     if (p.d > viewAhead || Math.abs(p.y) > viewHalf) return;
     const hit = tgt.includes(p.id);
@@ -326,8 +324,6 @@ function render(d) {
   const short = s => (s || "").replace(/ -- .*/, "").replace(/\(.*\)/, "").trim();
   chip("c1", "undertaking", d.undertake.active,
        d.undertake.active ? `cap ${kph(d.undertake.cap * 3.6)} km/h` : short(d.undertake.why));
-  chip("c2", "merge yield", d.merge_yield.active,
-       d.merge_yield.active ? `cap ${kph(d.merge_yield.cap * 3.6)} km/h` : short(d.merge_yield.why));
   const T = d.turn_ahead || {};
   chip("c4", "turn ahead", T.active,
        T.active ? `${kph(T.cap * 3.6)} km/h · ${T.at_m} m`
