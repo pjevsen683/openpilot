@@ -47,6 +47,12 @@ def collector() -> None:
   # PSD is not in the cereal schema, so it is read straight off the bus.
   can_sock = messaging.sub_sock("can", timeout=0)
   psd = psd_mod.PSD()
+  # Raw side-assist frames, shown as hex so they can be stared at. Nothing
+  # decodes them yet: the front radar's layout produced -461 km/h and 32 m
+  # lateral offsets when applied here, and a byte that tracked one overtake at
+  # r=0.98 gave slopes spanning a factor of ten across four more.
+  side_raw = {"0x24C": None, "0x24D": None}
+  side_seen: dict = {}
   rk = Ratekeeper(10.0)
   points: list = []
   last_radar = 0.0
@@ -63,6 +69,18 @@ def collector() -> None:
       for c in m.can:
         if c.src == psd_mod.BUS and c.address in (psd_mod.ADDR_04, psd_mod.ADDR_05, psd_mod.ADDR_06):
           psd.feed(c.address, bytes(c.dat))
+        elif c.src == 0 and c.address in (0x24C, 0x24D):
+          raw = bytes(c.dat)
+          key = "0x%X" % c.address
+          side_raw[key] = raw.hex()
+          # remember which byte positions have ever moved, so the page can mark
+          # the live ones instead of a wall of identical numbers
+          was = side_seen.get(key)
+          if was is None:
+            side_seen[key] = [set([v]) for v in raw]
+          else:
+            for i, v in enumerate(raw[:len(was)]):
+              was[i].add(v)
 
     if sm.updated["radarTracks"]:
       points = geometry.radar_points(sm["radarTracks"], v_ego)
@@ -103,6 +121,8 @@ def collector() -> None:
       # position -- so this is a yes or no per side, drawn alongside us rather
       # than anywhere in particular. opendbc decodes it from
       # MEB_Side_Assist_01 into carState, so no raw CAN needed here.
+      "side_raw": dict(side_raw),
+      "side_live": {k: [len(x) > 1 for x in v] for k, v in side_seen.items()},
       "blindspot": {"left": bool(sm["carState"].leftBlindspot),
                     "right": bool(sm["carState"].rightBlindspot)},
       "scene": geometry.scene(sm["modelV2"]),
