@@ -133,6 +133,22 @@ function draw(cv, d) {
     ctx.fillText(`${(p.v_abs * 3.6).toFixed(0)}`, cx + bw / 2 + 3, rear - 2);
   });
 
+  // Side and rear radar. The car reports presence per side and nothing else --
+  // no distance, no position -- so the car is drawn level with us, one lane
+  // over, with a dashed outline to say the position is assumed rather than
+  // measured. A solid box here would claim knowledge we do not have.
+  const bs = d.blindspot || {};
+  for (const [side, on] of [["left", bs.left], ["right", bs.right]]) {
+    if (!on) continue;
+    const y = side === "left" ? -LANE_W_BEV : LANE_W_BEV;
+    const bw = Math.max(7, (CAR_W / viewHalf) * (w / 2));
+    const bh = Math.max(10, Y(0) - Y(CAR_L));
+    ctx.save();
+    ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    ctx.strokeRect(X(y) - bw / 2, EGO_Y - bh * 0.15, bw, bh);
+    ctx.restore();
+  }
+
   // ego: front bumper on the origin, body drawn backwards
   const ew = Math.max(7, (CAR_W / viewHalf) * (w / 2));
   const eh = Math.max(10, Y(0) - Y(CAR_L));
@@ -283,6 +299,7 @@ function drawRoute(cv, psd, lanePos) {
 // on top of the DBC offset to approximate the gap to the rear of the object.
 const CAR_L = 4.6;        // metres, drawn to scale
 const CAR_W = 1.85;
+const LANE_W_BEV = 3.5;
 let viewHalf = 8, viewAhead = 140, showMap = true;
 const ROUTE_M = 500;
 const LANE_W = 3.5;   // metres, for drawing only
@@ -314,8 +331,9 @@ function render(d) {
             : "nothing in range");
 
   // context under each view
-  const lanes = d.lanes || {};
-  set("bevfoot", `${(d.points || []).length} objects · `
+  const lanes = d.lanes || {}, bs2 = d.blindspot || {};
+  const bsTxt = [bs2.left ? "L" : null, bs2.right ? "R" : null].filter(Boolean).join("+");
+  set("bevfoot", `${(d.points || []).length} objects${bsTxt ? " · blind spot " + bsTxt : ""} · `
       + `${lanes.rightmost ? "rightmost" : lanes.leftmost ? "leftmost" : "middle"} · `
       + `edges ${lanes.left_edge_m ?? "?"}/${lanes.right_edge_m ?? "?"} m`);
 

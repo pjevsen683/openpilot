@@ -99,6 +99,12 @@ def collector() -> None:
       "engaged": bool(sm["carState"].cruiseState.enabled),
       "radar_age_s": round(radar_age, 1) if radar_age is not None else None,
       "points": points,
+      # Side and rear radar. The car gives presence only -- no distance, no
+      # position -- so this is a yes or no per side, drawn alongside us rather
+      # than anywhere in particular. opendbc decodes it from
+      # MEB_Side_Assist_01 into carState, so no raw CAN needed here.
+      "blindspot": {"left": bool(sm["carState"].leftBlindspot),
+                    "right": bool(sm["carState"].rightBlindspot)},
       "scene": geometry.scene(sm["modelV2"]),
       "lanes": lanes,
       "osm": osm_view,
@@ -143,6 +149,7 @@ def trace_record(snap: dict) -> dict:
     "delta_kph": snap.get("delta_kph"),
     "undertake": snap.get("undertake"),
     "left_lane": snap.get("left_lane"),
+    "blindspot": snap.get("blindspot"),
     "points": snap.get("points"),
     "lanes": snap.get("lanes"),
     "lane_probs": [l["prob"] if l else None for l in (sc.get("lane_lines") or [])],
