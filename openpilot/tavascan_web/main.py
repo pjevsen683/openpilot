@@ -81,15 +81,14 @@ def collector() -> None:
     lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
     ut = shadow.undertake(points, v_ego, lanes["rightmost"])
     left = shadow.left_lane_report(points, v_ego)
-    psd_snap = psd.snapshot(v_ego * CV.MS_TO_KPH)
-    turn = shadow.turn_ahead(psd_snap, v_ego)
+    psd_snap = psd.snapshot()
 
     # carState.cruiseState.speed is the CAR's own cruise setting and reads zero
     # throughout when openpilot does longitudinal. vCruise is openpilot's own set
     # speed, already in km/h. Checked against a whole drive: cruiseState.speed was
     # 0 for all 102 segments while vCruise tracked every change.
     v_cruise_kph = sm["carState"].vCruise
-    caps = [r["cap"] for r in (ut, turn) if r["cap"] is not None]
+    caps = [r["cap"] for r in (ut,) if r["cap"] is not None]
     combined = min(caps) if caps else None
 
     snap = {
@@ -104,7 +103,6 @@ def collector() -> None:
       "lanes": lanes,
       "osm": osm_view,
       "psd": psd_snap,
-      "turn_ahead": turn,
       "undertake": ut,
       "left_lane": left,
       "would_cap_kph": round(combined * CV.MS_TO_KPH, 1) if combined else None,
@@ -116,7 +114,7 @@ def collector() -> None:
       _snapshot.clear()
       _snapshot.update(snap)
 
-    active = ut["active"] or turn["active"] or bool(left["slower"])
+    active = ut["active"] or bool(left["slower"])
     now = time.monotonic()
     period = ACTIVE_PERIOD_S if (active or was_active) else HEARTBEAT_S
     if now - last_beat >= period:
@@ -145,7 +143,6 @@ def trace_record(snap: dict) -> dict:
     "delta_kph": snap.get("delta_kph"),
     "undertake": snap.get("undertake"),
     "left_lane": snap.get("left_lane"),
-    "turn_ahead": snap.get("turn_ahead"),
     "points": snap.get("points"),
     "lanes": snap.get("lanes"),
     "lane_probs": [l["prob"] if l else None for l in (sc.get("lane_lines") or [])],

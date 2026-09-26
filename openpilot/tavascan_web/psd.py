@@ -49,53 +49,22 @@ ROAD_CATEGORY = {0: "unknown", 1: "motorway", 2: "trunk", 3: "primary",
                  4: "secondary", 5: "local", 6: "minor", 7: "other"}
 
 CURV_INVALID = 255
-# PSD encodes curvature as an index that runs the other way from curvature: a
-# low number is a tight bend and a high one is a straight road, with the radius
-# roughly doubling every 40 counts. Fitted against the yaw rate actually driven
-# through 346 segments:
-#
-#     PSD  0-15 -> 205 m      PSD 64-79  ->  712 m
-#     PSD 32-47 -> 304 m      PSD 128-143-> 3480 m
-#
-# A least-squares fit on log radius gives R = 130 * exp(v / 43.5), which tracks
-# the shape well (R^2 = 0.97 in log space) but is off by up to 25 % on any one
-# bucket. The comparison pairs a segment's end curvature against a window of
-# measured yaw rate, so treat the radius as an order of magnitude rather than a
-# number to plan a manoeuvre with.
+# Curvature is decoded and drawn, but no speed is derived from it any more.
+# It does not describe tight corners at all: measured against 39 corners driven
+# at 7-16 m radius, the field reported 14, 17, 22, 76, 137, 175 and the invalid
+# 255 for the same kind of corner, with the car's own guidance making no
+# difference. A speed target built on that is a number with nothing behind it.
 CURV_R0, CURV_V0, CURV_DECADE = 130.2, 0.0, 43.5
 CURV_MAX_R = 5000.0
-# The fit was built from ordinary road bends and only holds there. Checked
-# against roundabouts, which we measured at 8-16 m radius, PSD reported values
-# of 14, 17, 22, 76, 137, 175 and 255 for the same kind of corner -- no order at
-# all. So tight corners are not described by this field, and a number computed
-# for one would be invented. Outside the range the fit was measured over, no
-# radius is reported and nothing downstream claims to know the speed.
 CURV_VALID_LO, CURV_VALID_HI = 32, 145
-# Lateral acceleration we are willing to take through a bend, matching the
-# figure sunnypilot's curve speed control uses.
-A_LAT_MAX = 2.0
-# A bend only counts as a reason to slow down if it would actually make us slow
-# down. Without this, the end of every straight segment is announced with the
-# speed its 1000 m radius allows -- "bend in 14 m, 181 km/h" -- which is noise
-# dressed up as a warning.
-SLOWDOWN_MARGIN_KPH = 5
-# Used when we do not know our own speed. Nothing above this constrains anyone.
-SLOWDOWN_CEILING_KPH = 110
 
 
 def radius_from_psd(value: int) -> float | None:
-  """Metres, or None when the field is unset or says straight."""
+  """Metres, or None when unset or outside the range the fit was measured over."""
   if value == CURV_INVALID or not (CURV_VALID_LO <= value <= CURV_VALID_HI):
     return None
   r = CURV_R0 * math.exp((value - CURV_V0) / CURV_DECADE)
   return None if r > CURV_MAX_R else round(r)
-
-
-def speed_for_radius(radius: float | None) -> float | None:
-  """km/h that keeps lateral acceleration at A_LAT_MAX through a bend."""
-  if not radius or radius <= 0:
-    return None
-  return round(math.sqrt(A_LAT_MAX * radius) * 3.6)
 
 
 def _b(data: bytes, start: int, length: int) -> int:
@@ -161,14 +130,7 @@ class PSD:
       del self.segments[sid]
 
   # --- interpretation ------------------------------------------------------
-  def _is_slowdown(self, kph: float | None, v_ego_kph: float | None) -> bool:
-    if not kph:
-      return False
-    if v_ego_kph is None:
-      return kph <= SLOWDOWN_CEILING_KPH
-    return kph <= max(v_ego_kph - SLOWDOWN_MARGIN_KPH, 30)
-
-  def path_ahead(self, v_ego_kph: float | None = None) -> dict:
+  def path_ahead(self) -> dict:
     """Follows the most probable path from where we are, noting what branches off.
 
     Distances are measured from the car. PSD_Pos_Segmentlaenge counts down to
@@ -215,7 +177,6 @@ class PSD:
                               # right in 29 of 33.
                               "bend_dir": 1 if cur["curv_end_vz"] else -1,
                               "bend_dir_start": 1 if cur["curv_start_vz"] else -1,
-                              "curve_kph": speed_for_radius(r_end),
                               # How sharply this segment leaves the one before it.
                               # For a segment ahead of us that is the turn we are
                               # expected to make, at the distance the segment
@@ -244,8 +205,7 @@ class PSD:
             "ramp": bool(s2["ramp"]), "lanes": s2["lanes"],
             "category": ROAD_CATEGORY.get(s2["category"], "?"), "probable": s2["probable"],
             "radius_m": radius_from_psd(s2["curv_start"]),
-            "curve_kph": speed_for_radius(radius_from_psd(s2["curv_start"])),
-          })
+            })
         break
       hop = remaining if first else cur["length_m"]
       for s in nxt:
@@ -272,7 +232,6 @@ class PSD:
           # PSD_Sys_Zielfuehrung reads false and nothing here is a prediction.
           "probable": s["probable"],
           "radius_m": radius_from_psd(s["curv_start"]),
-          "curve_kph": speed_for_radius(radius_from_psd(s["curv_start"])),
         })
       dist += remaining if first else cur["length_m"]
       first = False
@@ -280,28 +239,14 @@ class PSD:
 
     out["branches"].sort(key=lambda b: b["at_m"])
 
+    out["branches"].sort(key=lambda b: b["at_m"])
+
     # The single thing worth putting in front of a driver: the next reason to
     # slow down, whether that is a bend on our own road or a turn off it.
-    cand = []
-    for seg in out["segments"]:
-      if self._is_slowdown(seg["curve_kph"], v_ego_kph):
-        cand.append({"kind": "bend", "at_m": seg["ends_at_m"],
-                     "kph": seg["curve_kph"], "radius_m": seg["radius_m"],
-                     "confirmed": True, "side": None, "angle": None})
-    for br in out["branches"]:
-      if self._is_slowdown(br["curve_kph"], v_ego_kph):
-        cand.append({"kind": "ramp" if br["ramp"] else "turn", "at_m": br["at_m"],
-                     "kph": br["curve_kph"], "radius_m": br["radius_m"],
-                     "confirmed": bool(br["probable"] and self.guidance),
-                     "side": br["side"], "angle": br["angle"]})
-    # Nearest first, but a bend we will definitely drive through outranks a
-    # turn we may not take.
-    cand.sort(key=lambda c: (c["at_m"], not c["confirmed"]))
-    out["next_slowdown"] = cand[0] if cand else None
     return out
 
-  def snapshot(self, v_ego_kph: float | None = None) -> dict:
-    p = self.path_ahead(v_ego_kph)
+  def snapshot(self) -> dict:
+    p = self.path_ahead()
     return {
       "guidance": self.guidance,
       "country": self.country,

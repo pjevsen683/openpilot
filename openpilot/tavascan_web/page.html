@@ -34,7 +34,7 @@
   .foot { position: absolute; bottom: 3px; left: 6px; right: 6px; font-size: 9px;
           color: #999; pointer-events: none; }
 
-  .chips { display: grid; grid-template-columns: repeat(3, 1fr); gap: var(--gap); }
+  .chips { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap); }
   .chip { background: #1c1c1c; border-radius: 8px; padding: 4px 7px; border-left: 3px solid #333;
           min-width: 0; }
   .chip.on { background: #4a2a12; border-left-color: #ff9c3a; }
@@ -73,7 +73,6 @@
 <div class="chips">
   <div class="chip" id="c1"><u>undertaking</u><i>–</i></div>
   <div class="chip" id="c3"><u>left lane</u><i>–</i></div>
-  <div class="chip" id="c4"><u>turn ahead</u><i>–</i></div>
 </div>
 
 <div class="status"><span id="s1">connecting…</span><span id="s2"></span></div>
@@ -140,7 +139,7 @@ function draw(cv, d) {
   ctx.fillStyle = "#3ddc84";
   ctx.fillRect(X(0) - ew / 2, EGO_Y, ew, eh);
 }
-function drawRoute(cv, psd, lanePos, turnAt) {
+function drawRoute(cv, psd, lanePos) {
   const ctx = cv.getContext("2d");
   const dpr = window.devicePixelRatio || 1;
   const w = cv.clientWidth, h = cv.clientHeight;
@@ -274,22 +273,7 @@ function drawRoute(cv, psd, lanePos, turnAt) {
     ctx.fillText("sideways \u00d7" + (scX / scY).toFixed(0), 4, h - 5);
   }
 
-  // the turn we are expected to make, marked where it starts
-  if (turnAt && turnAt.at_m > 0) {
-    const p = pts.reduce((a, q) => Math.abs(q.s - turnAt.at_m) < Math.abs(a.s - turnAt.at_m) ? q : a, pts[0]);
-    ctx.strokeStyle = turnAt.active ? "#ff9c3a" : "#777"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(PX(p), PY(p), 7, 0, 7); ctx.stroke();
-  }
 
-  // the next slowdown, marked on the road
-  const ns = psd.next_slowdown;
-  if (ns && ns.at_m <= ROUTE_M) {
-    const p = pts.reduce((a, q) => Math.abs(q.s - ns.at_m) < Math.abs(a.s - ns.at_m) ? q : a, pts[0]);
-    ctx.strokeStyle = "#ff9c3a"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(PX(p), PY(p), 9, 0, 7); ctx.stroke();
-    ctx.fillStyle = "#ff9c3a"; ctx.font = "600 11px system-ui";
-    ctx.fillText(ns.kph + " km/h", PX(p) + 12, PY(p) - 6);
-  }
 }
 // One frame everywhere: x metres ahead, y metres to the RIGHT. The radar's
 // opposite sign is flipped on the device, never here.
@@ -324,10 +308,6 @@ function render(d) {
   const short = s => (s || "").replace(/ -- .*/, "").replace(/\(.*\)/, "").trim();
   chip("c1", "undertaking", d.undertake.active,
        d.undertake.active ? `cap ${kph(d.undertake.cap * 3.6)} km/h` : short(d.undertake.why));
-  const T = d.turn_ahead || {};
-  chip("c4", "turn ahead", T.active,
-       T.active ? `${kph(T.cap * 3.6)} km/h · ${T.at_m} m`
-                : (T.at_m ? `${T.angle}° ${T.side} · ${T.at_m} m` : "none"));
   const L = d.left_lane || {}, seen = L.nearest;
   chip("c3", "left lane", !!L.slower,
        seen ? `${kph(seen.v_abs * 3.6)} km/h · ${seen.d.toFixed(0)} m · ${L.diff_kph > 0 ? "+" : ""}${L.diff_kph}`
@@ -339,10 +319,14 @@ function render(d) {
       + `${lanes.rightmost ? "rightmost" : lanes.leftmost ? "leftmost" : "middle"} · `
       + `edges ${lanes.left_edge_m ?? "?"}/${lanes.right_edge_m ?? "?"} m`);
 
-  const p = d.psd || {}, ns = p.next_slowdown, here = p.here;
-  set("routefoot", ns
-      ? `<span style="color:#ff9c3a">${ns.kind}${ns.side ? " " + ns.side : ""} in ${ns.at_m} m → ${ns.kph} km/h</span>`
-      : (here ? `${here.category} · ${here.lanes} lane(s)` : "no route"));
+  // What PSD says, not what we would infer from it. Curvature does not describe
+  // tight corners, so no speed is derived from the road ahead any more.
+  const p = d.psd || {}, here = p.here;
+  const nextBranch = (p.branches || [])[0];
+  set("routefoot", here
+      ? `${here.category} · ${here.lanes} lane(s)`
+        + (nextBranch ? ` · ${nextBranch.ramp ? "ramp" : "turning"} ${nextBranch.side} in ${nextBranch.at_m} m` : "")
+      : "no route");
 
   const osm = d.osm || {}, live = osm.live || {};
   set("s1", `${live.road_name || "–"}${live.speed_limit_kph ? " · " + live.speed_limit_kph + " km/h" : ""}`
@@ -352,7 +336,7 @@ function render(d) {
       + " · shadow only");
 
   draw(document.getElementById("bev"), d);
-  drawRoute(document.getElementById("route"), p, lanes, T);
+  drawRoute(document.getElementById("route"), p, lanes);
 }
 
 document.getElementById("bw").onclick = e => {
