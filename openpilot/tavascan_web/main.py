@@ -23,6 +23,7 @@ import time
 
 from openpilot.cereal import messaging
 from openpilot.common.realtime import Ratekeeper
+from openpilot.common.swaglog import cloudlog
 from opendbc.car.common.conversions import Conversions as CV
 from openpilot.tavascan_web import geometry, osm, psd as psd_mod, server, shadow
 
@@ -43,6 +44,21 @@ _lock = threading.Lock()
 
 
 def collector() -> None:
+  """Never lets an exception kill the thread silently.
+
+  It did: removing one rule took a helper with it, the collector raised on every
+  iteration, and the page served {"ready": false} indefinitely while the server
+  carried on. Nothing in the logs, because nothing was catching it.
+  """
+  while True:
+    try:
+      _collect()
+    except Exception:
+      cloudlog.exception("tavascan_web: collector failed, retrying")
+      time.sleep(2.0)
+
+
+def _collect() -> None:
   sm = messaging.SubMaster(["carState", "modelV2", "radarTracks", "liveMapDataSP"])
   # PSD is not in the cereal schema, so it is read straight off the bus.
   can_sock = messaging.sub_sock("can", timeout=0)
