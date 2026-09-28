@@ -111,6 +111,10 @@ def _collect() -> None:
       osm_view = {"params": osm.read_params(), "maps": osm.maps_installed()}
     osm_view["live"] = osm.read_live(sm)
     osm_view["road_ahead"] = osm.road_ahead()
+    # Cheap enough at 10 Hz -- one shm read and a json parse, the same the line
+    # above already does -- and it is the one map signal that could be early
+    # enough to brake for a roundabout.
+    osm_view["horizon"] = osm.map_horizon()
 
     lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
     ut = shadow.undertake(points, v_ego, lanes["rightmost"])
@@ -157,8 +161,15 @@ def _collect() -> None:
       _snapshot.update(snap)
 
     active = ut["active"] or bool(left["slower"])
+    # A 10 s heartbeat cannot describe an approach to a bend: 162 m at 80 km/h
+    # is seven seconds, so the whole event can fall between two records. When
+    # the map says the road ahead wants us much slower than we are going, write
+    # at the active rate so the approach is there to look at afterwards.
+    hz = osm_view.get("horizon") or {}
+    curve_ahead = bool(hz.get("available") and
+                       hz.get("slowest_kph", 999) < v_ego * CV.MS_TO_KPH - 15.0)
     now = time.monotonic()
-    period = ACTIVE_PERIOD_S if (active or was_active) else HEARTBEAT_S
+    period = ACTIVE_PERIOD_S if (active or was_active or curve_ahead) else HEARTBEAT_S
     if now - last_beat >= period:
       append_trace(snap)
       last_beat = now
@@ -191,6 +202,10 @@ def trace_record(snap: dict) -> dict:
     "lane_probs": [l["prob"] if l else None for l in (sc.get("lane_lines") or [])],
     "road": osm_live.get("road_name"),
     "limit_kph": osm_live.get("speed_limit_kph"),
+    # Kept in the trace because it is the whole question for curve braking: how
+    # far ahead does the map name the slow point, and is that further than the
+    # distance it takes to get down to that speed.
+    "map_horizon": (snap.get("osm") or {}).get("horizon"),
     "radar_age_s": snap.get("radar_age_s"),
     "psd": {k: (snap.get("psd") or {}).get(k)
             for k in ("guidance", "here", "branches", "age_s")},

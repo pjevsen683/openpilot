@@ -154,3 +154,32 @@ def road_ahead(max_points: int = 60) -> dict:
 
   out["available"] = len(out["points"]) >= 2
   return out
+
+
+def map_horizon() -> dict:
+  """How far ahead the map reaches, and the slowest it wants us to go out there.
+
+  mapd derives MapTargetVelocities from OSM geometry alone -- at 2.0 m/s^2
+  lateral, going by the values it publishes -- so this answers "how tight is the
+  road ahead" without a camera and without the car's own PSD horizon, both of
+  which only resolve a roundabout once it is close.
+
+  The number that matters is slowest_at_m. Braking from 80 to 30 km/h takes
+  141 m at a comfortable 1.5 m/s^2 and still 85 m at a brisk 2.5. If the map
+  names the slow point further out than that, a map-driven speed target has
+  time to work; if it does not, nothing built on it can be early enough.
+  """
+  view = road_ahead(max_points=10000)
+  pts, speeds = view.get("points") or [], view.get("speeds") or []
+  ahead = [(p[0], s) for p, s in zip(pts, speeds) if p[0] > 0 and s is not None]
+  if len(ahead) < 2:
+    return {"available": False, "n": len(pts)}
+  at_m, kph = min(ahead, key=lambda e: e[1])
+  return {
+    "available": True,
+    "n": len(pts),
+    "horizon_m": round(max(p[0] for p in pts)),
+    "slowest_kph": round(kph),
+    "slowest_at_m": round(at_m),
+    "here_kph": round(ahead[0][1]),
+  }
