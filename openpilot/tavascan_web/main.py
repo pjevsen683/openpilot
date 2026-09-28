@@ -213,10 +213,16 @@ def trace_record(snap: dict) -> dict:
 
 
 def append_trace(snap: dict) -> None:
-  """Appends one line per tick while a rule is engaged. Bounded in size."""
+  """Appends one line per tick while a rule is engaged. Bounded in size.
+
+  Rotates rather than stopping. The first version simply returned once the file
+  passed the cap, and it passed the cap on 11 September: every drive since then
+  wrote nothing at all, in silence, including the ones this was built to record.
+  Rolling to a single .1 file bounds the disk at twice the cap and never stops.
+  """
   try:
     if os.path.exists(TRACE) and os.path.getsize(TRACE) > TRACE_MAX_BYTES:
-      return
+      os.replace(TRACE, TRACE + ".1")
     with open(TRACE, "a") as f:
       f.write(json.dumps(trace_record(snap)) + "\n")
   except OSError:
