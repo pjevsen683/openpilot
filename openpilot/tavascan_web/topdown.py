@@ -34,7 +34,8 @@ Y_HALF = 14.0
 
 # First image row that is dashboard rather than road, measured across the frame
 # on this car. Everything below it is masked black instead of being smeared
-# across the near field, where it would look like road surface.
+# across the near field, where it would look like road surface. In rows of a
+# 760-row frame, scaled to whatever the buffer turns out to be.
 V_DASH = 490.0
 
 OUT_W = int(os.getenv("TAVASCAN_TOPDOWN_W", "320"))
@@ -60,6 +61,9 @@ DEMAND_S = 4.0
 FISHEYE = dict(fl=446.15, k1=-0.12258, k2=0.33397, dpitch=0.0095126, dyaw=0.0013963)
 PINHOLE = dict(fl=567.0 / 4 * 3, k1=0.0, k2=0.0, dpitch=0.0, dyaw=0.0)
 USE_PINHOLE = os.getenv("TAVASCAN_TOPDOWN_PINHOLE") == "1"
+# Both focal lengths are in pixels of a 1344-wide frame, so they only mean what
+# they say at that size. Scaled by the buffer we actually get.
+FIT_WIDTH, FIT_HEIGHT = 2688 // 2, 1520 // 2
 
 # view frame: x right, y down, z forward.  device/calib frame: x fwd, y right, z down
 VIEW_FROM_DEVICE = np.array([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])
@@ -98,11 +102,13 @@ def build_table(rpy_calib, wide_from_device, height, width, rows, stride):
   th = np.arctan(rn)
   rd = th + m["k1"] * th ** 3 + m["k2"] * th ** 5
   s = np.where(rn > 1e-9, rd / np.maximum(rn, 1e-9), 1.0)
-  u = m["fl"] * xn * s + width / 2.0
-  v = m["fl"] * yn * s + rows / 2.0
+  fl = m["fl"] * width / FIT_WIDTH
+  u = fl * xn * s + width / 2.0
+  v = fl * yn * s + rows / 2.0
 
+  v_dash = min(rows - 1.0, V_DASH * rows / FIT_HEIGHT)
   bad = ((z <= 0) | ~np.isfinite(u) | ~np.isfinite(v) |
-         (u < 0) | (u > width - 1) | (v < 0) | (v > min(rows - 1, V_DASH)))
+         (u < 0) | (u > width - 1) | (v < 0) | (v > v_dash))
   ui = np.clip(np.rint(u), 0, width - 1).astype(np.int32)
   vi = np.clip(np.rint(v), 0, rows - 1).astype(np.int32)
   return (vi * stride + ui).ravel().astype(np.int32), bad.ravel()
@@ -202,7 +208,10 @@ class TopDown:
       idx, bad = self._table_for(cal, buf)
       # The Y plane alone: a grey road reads fine and colour would mean carrying
       # the interleaved UV plane through the same gather for no real gain.
-      flat = np.frombuffer(buf.data, dtype=np.uint8, count=buf.uv_offset)
+      # buf.data is a view on the shared buffer, so nothing is copied here; the
+      # gather below is the first time any pixel is touched.
+      data = buf.data
+      flat = data if isinstance(data, np.ndarray) else np.frombuffer(data, dtype=np.uint8)
       out = flat[idx]
       out[bad] = 0
 
