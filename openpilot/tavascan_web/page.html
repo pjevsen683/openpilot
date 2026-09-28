@@ -322,7 +322,7 @@ let viewHalf = 8, viewAhead = 140, showMap = true, showCam = true;
 const camImg = new Image();
 let camOK = false, camSent = 0;
 // Overwritten by /topdown.json; these only have to be right if that fetch fails.
-let camExtent = { x_near: 5, x_far: 28, y_half: 14 };
+let camExtent = { x_near: 5, x_far: 100, y_half: 14 };
 camImg.onload = () => { camOK = true; camSent = 0; };
 camImg.onerror = () => { camOK = false; camSent = 0; };
 fetch("/topdown.json").then(r => r.ok ? r.json() : null)
