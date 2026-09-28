@@ -169,17 +169,49 @@ def map_horizon() -> dict:
   names the slow point further out than that, a map-driven speed target has
   time to work; if it does not, nothing built on it can be early enough.
   """
-  view = road_ahead(max_points=10000)
-  pts, speeds = view.get("points") or [], view.get("speeds") or []
-  ahead = [(p[0], s) for p, s in zip(pts, speeds) if p[0] > 0 and s is not None]
+  raw = _read(os.path.join(MEM_PARAMS, "MapTargetVelocities")) or \
+        _read(os.path.join(DISK_PARAMS, "MapTargetVelocities"))
+  pos = _read(os.path.join(MEM_PARAMS, "LastGPSPosition")) or \
+        _read(os.path.join(DISK_PARAMS, "LastGPSPosition"))
+  if not raw or not pos:
+    return {"available": False}
+  try:
+    pts = json.loads(raw)
+    here = json.loads(pos)
+    lat0, lon0 = float(here["latitude"]), float(here["longitude"])
+    bearing = math.radians(float(here.get("bearing", 0.0)))
+  except (ValueError, TypeError, KeyError):
+    return {"available": False}
+  if not isinstance(pts, list) or len(pts) < 2:
+    return {"available": False, "n": len(pts) if isinstance(pts, list) else 0}
+
+  coslat = math.cos(math.radians(lat0))
+  cb, sb = math.cos(bearing), math.sin(bearing)
+  ahead = []
+  for p in pts:
+    try:
+      dn = math.radians(float(p["latitude"]) - lat0) * EARTH_R
+      de = math.radians(float(p["longitude"]) - lon0) * EARTH_R * coslat
+      v = float(p["velocity"]) * 3.6
+    except (ValueError, TypeError, KeyError):
+      continue
+    x = dn * cb + de * sb
+    if x > 0:
+      ahead.append((x, v, float(p["latitude"]), float(p["longitude"])))
   if len(ahead) < 2:
     return {"available": False, "n": len(pts)}
-  at_m, kph = min(ahead, key=lambda e: e[1])
+
+  ahead.sort()
+  at_m, kph, slat, slon = min(ahead, key=lambda e: e[1])
   return {
     "available": True,
     "n": len(pts),
-    "horizon_m": round(max(p[0] for p in pts)),
+    "horizon_m": round(ahead[-1][0]),
     "slowest_kph": round(kph),
     "slowest_at_m": round(at_m),
+    # Where the map thinks it is slow, so a spot that turns out to be nothing --
+    # a lane merge read as a corner, say -- can be identified afterwards instead
+    # of only being noticed from the driver's seat.
+    "slowest_at": [round(slat, 6), round(slon, 6)],
     "here_kph": round(ahead[0][1]),
   }
