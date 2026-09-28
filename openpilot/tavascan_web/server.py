@@ -26,7 +26,7 @@ class _Server(ThreadingHTTPServer):
   daemon_threads = True
 
 
-def make_handler(page_path: str, snapshot, lock):
+def make_handler(page_path: str, snapshot, lock, topdown=None):
   class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
       pass  # do not spam the openpilot logs with request lines
@@ -44,6 +44,23 @@ def make_handler(page_path: str, snapshot, lock):
         with lock:
           body = json.dumps(snapshot).encode()
         self._send(200, body, "application/json")
+      elif self.path.startswith("/topdown.jpg"):
+        # Asking is what keeps the warp running on the car; when the page stops
+        # asking, the worker goes back to sleep. 503 until the first frame,
+        # which the page treats as "not available" rather than an error.
+        if topdown is None:
+          self._send(404, b"no top-down", "text/plain")
+          return
+        jpeg, _ts = topdown.request()
+        if jpeg is None:
+          self._send(503, b"no frame yet", "text/plain")
+        else:
+          self._send(200, jpeg, "image/jpeg")
+      elif self.path.startswith("/topdown.json"):
+        if topdown is None:
+          self._send(404, b"no top-down", "text/plain")
+        else:
+          self._send(200, json.dumps(topdown.extent).encode(), "application/json")
       elif self.path in ("/", "/index.html"):
         try:
           with open(page_path, "rb") as f:
@@ -56,9 +73,9 @@ def make_handler(page_path: str, snapshot, lock):
   return Handler
 
 
-def serve(port: int, page_path: str, snapshot: dict, lock: threading.Lock) -> None:
+def serve(port: int, page_path: str, snapshot: dict, lock: threading.Lock, topdown=None) -> None:
   """Blocks. Retries the bind so a handover from the other page is not fatal."""
-  handler = make_handler(page_path, snapshot, lock)
+  handler = make_handler(page_path, snapshot, lock, topdown)
   for attempt in range(BIND_ATTEMPTS):
     try:
       srv = _Server(("0.0.0.0", port), handler)
