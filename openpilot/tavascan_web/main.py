@@ -25,7 +25,7 @@ from openpilot.cereal import messaging
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from opendbc.car.common.conversions import Conversions as CV
-from openpilot.tavascan_web import geometry, osm, psd as psd_mod, server, shadow, topdown
+from openpilot.tavascan_web import geometry, osm, psd as psd_mod, server, shadow
 
 PORT = int(os.getenv("TAVASCAN_WEB_PORT", "8088"))
 TRACE = os.getenv("TAVASCAN_WEB_TRACE", "/data/tavascan_shadow.jsonl")
@@ -231,8 +231,7 @@ def append_trace(snap: dict) -> None:
 
 def main() -> None:
   threading.Thread(target=collector, daemon=True).start()
-  # Idle until the page asks for it, so a closed page costs the car nothing.
-  server.serve(PORT, PAGE, _snapshot, _lock, topdown.start())
+  server.serve(PORT, PAGE, _snapshot, _lock)
 
 
 if __name__ == "__main__":

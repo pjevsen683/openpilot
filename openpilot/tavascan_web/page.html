@@ -63,7 +63,7 @@
     <canvas id="bev"></canvas>
     <div class="tag">around us</div>
     <div class="btns">
-      <button id="bw">8 m</button><button id="ba">140</button><button id="bm">map</button><button id="bc">cam</button>
+      <button id="bw">8 m</button><button id="ba">140</button><button id="bm">map</button>
     </div>
     <div class="foot" id="bevfoot"></div>
   </div>
@@ -93,16 +93,6 @@ function draw(cv, d) {
   const EGO_Y = h - Math.min(62, h * 0.18);   // leaves room for our own body below the origin
   const X = y => w / 2 + (y / viewHalf) * (w / 2);
   const Y = x => EGO_Y - (x / viewAhead) * (EGO_Y - 10);
-
-  // The camera's own view of the road, warped flat and laid down first so that
-  // everything the model and the radar claim is drawn on top of what is
-  // actually there. The device tells us which patch of ground it covers.
-  if (showCam && camOK) {
-    const l = X(-camExtent.y_half), r = X(camExtent.y_half);
-    ctx.save(); ctx.globalAlpha = 0.9;
-    ctx.drawImage(camImg, l, Y(camExtent.x_far), r - l, Y(camExtent.x_near) - Y(camExtent.x_far));
-    ctx.restore();
-  }
 
   // distance rings
   ctx.strokeStyle = "#242424"; ctx.fillStyle = "#4a4a4a";
@@ -315,26 +305,7 @@ function drawRoute(cv, psd, lanePos) {
 const CAR_L = 4.6;        // metres, drawn to scale
 const CAR_W = 1.85;
 const LANE_W_BEV = 3.5;
-let viewHalf = 8, viewAhead = 140, showMap = true, showCam = true;
-
-// The live top-down from the wide camera. The car only does the warping while
-// we keep asking for frames, so turning this off here stops the work there.
-const camImg = new Image();
-let camOK = false, camSent = 0;
-// Overwritten by /topdown.json; these only have to be right if that fetch fails.
-let camExtent = { x_near: 5, x_far: 100, y_half: 14 };
-camImg.onload = () => { camOK = true; camSent = 0; };
-camImg.onerror = () => { camOK = false; camSent = 0; };
-fetch("/topdown.json").then(r => r.ok ? r.json() : null)
-  .then(v => { if (v) camExtent = v; }).catch(() => {});
-setInterval(() => {
-  // One request in flight at a time, so a slow link does not pile them up --
-  // but never wedged by one that answers with neither load nor error.
-  if (!showCam || (camSent && Date.now() - camSent < 3000)) return;
-  camSent = Date.now();
-  camImg.src = "/topdown.jpg?t=" + camSent;
-}, 250);
-
+let viewHalf = 8, viewAhead = 140, showMap = true;
 const ROUTE_M = 500;
 const LANE_W = 3.5;   // metres, for drawing only
 
@@ -414,11 +385,6 @@ document.getElementById("ba").onclick = e => {
 document.getElementById("bm").onclick = e => {
   showMap = !showMap;
   e.target.style.color = showMap ? "#bbb" : "#555";
-};
-document.getElementById("bc").onclick = e => {
-  showCam = !showCam;
-  e.target.style.color = showCam ? "#bbb" : "#555";
-  if (!showCam) camOK = false;
 };
 
 async function tick() {
