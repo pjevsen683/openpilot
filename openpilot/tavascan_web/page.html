@@ -23,7 +23,7 @@
   .dot { width: 12px; height: 12px; border-radius: 50%; background: #333; }
   .dot.on { background: #3ddc84; }
 
-  .views { display: grid; grid-template-columns: 1fr 1fr; gap: var(--gap); min-height: 0; }
+  .views { display: grid; grid-template-columns: 1fr; gap: var(--gap); min-height: 0; }
   .view { position: relative; background: #161616; border-radius: 8px; overflow: hidden; min-height: 0; }
   canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   .tag { position: absolute; top: 4px; left: 6px; font-size: 9px; color: #777;
@@ -31,7 +31,7 @@
   .btns { position: absolute; top: 3px; right: 4px; display: flex; gap: 3px; }
   .btns button { background: #2a2a2ad0; color: #bbb; border: 0; border-radius: 4px;
                  padding: 2px 5px; font-size: 9px; }
-  .foot { position: absolute; bottom: 3px; left: 6px; right: 6px; font-size: 9px;
+  .foot { position: absolute; top: 18px; left: 6px; right: 6px; font-size: 9px;
           color: #999; pointer-events: none; }
 
   .chips { display: grid; grid-template-columns: repeat(2, 1fr); gap: var(--gap); }
@@ -61,16 +61,11 @@
 <div class="views">
   <div class="view">
     <canvas id="bev"></canvas>
-    <div class="tag">around us</div>
+    <div class="tag">around us · road to 500 m</div>
     <div class="btns">
       <button id="bw">8 m</button><button id="ba">140</button><button id="bm">map</button>
     </div>
     <div class="foot" id="bevfoot"></div>
-  </div>
-  <div class="view">
-    <canvas id="route"></canvas>
-    <div class="tag">road ahead 500 m</div>
-    <div class="foot" id="routefoot"></div>
   </div>
 </div>
 
@@ -90,31 +85,79 @@ function draw(cv, d) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
-  const EGO_Y = h - Math.min(62, h * 0.18);   // leaves room for our own body below the origin
-  const X = y => w / 2 + (y / viewHalf) * (w / 2);
-  const Y = x => EGO_Y - (x / viewAhead) * (EGO_Y - 10);
+  // Distance up the screen: linear out to `near`, where radar and model live,
+  // then squeezed so the car's own route still fits up to ROUTE_M. The scale
+  // falls off as g = 1 / sqrt(1 + c u^2 / (u + 150)), u metres past `near`: flat
+  // where it starts, so lines bend there rather than kink, and like 1/sqrt(c u)
+  // further out, which spreads 200-500 m more evenly than a log does. Sideways
+  // shrinks by the same g, so far road narrows like perspective instead of
+  // running off the side.
+  const near = viewAhead;
+  const REAR_PX = 30;                                // strip for the side radar
+  const EGO_Y = h - REAR_PX - 14;
+  const TOP = 58;                                    // below the text overlay
+  const FAR_PX = Math.round((EGO_Y - TOP) * 0.42);
+  const s = (EGO_Y - TOP - FAR_PX) / near;           // px per metre, near part
+  const span = ROUTE_M - near;
+  const gOf = (c, u) => 1 / Math.sqrt(1 + c * u * u / (u + 150));
+  const farPx = c => { let t = 0; for (let u = 0.5; u < span; u += 1) t += gOf(c, u); return s * t; };
+  let c = 0;
+  if (s * span > FAR_PX) {
+    let lo = 0, hi = 5000;
+    for (let i = 0; i < 40; i++) { c = (lo + hi) / 2; (farPx(c) > FAR_PX) ? (lo = c) : (hi = c); }
+  }
+  const tab = [0];                                   // px above the ego line, per metre past near
+  for (let u = 0; u < span + 2; u++) tab.push(tab[u] + s * gOf(c, u + 0.5));
+  const up = x => {
+    if (x <= near) return x * s;
+    const u = Math.min(x - near, span + 1), i = Math.floor(u);
+    return near * s + tab[i] + (tab[i + 1] - tab[i]) * (u - i);
+  };
+  const k = x => x <= near ? 1 : gOf(c, x - near);
+  const sx = (w / 2) / viewHalf;
+  const X = (y, x) => w / 2 + y * sx * k(x);
+  const Y = x => EGO_Y - up(Math.max(x, 0));
 
   // distance rings
   ctx.strokeStyle = "#242424"; ctx.fillStyle = "#4a4a4a";
   ctx.font = "10px system-ui"; ctx.lineWidth = 1;
-  const step = viewAhead <= 60 ? 10 : 25;
-  for (let m = step; m <= viewAhead; m += step) {
+  const step = near <= 60 ? 10 : 25;
+  const rings = [];
+  for (let m = step; m <= near; m += step) rings.push(m);
+  for (const m of [200, 300, 400, 500]) if (m > near + 30) rings.push(m);
+  for (const m of rings) {
     ctx.beginPath(); ctx.moveTo(0, Y(m)); ctx.lineTo(w, Y(m)); ctx.stroke();
     ctx.fillText(m + " m", 4, Y(m) - 3);
   }
+  ctx.strokeStyle = "#333"; ctx.setLineDash([2, 4]);
+  ctx.beginPath(); ctx.moveTo(0, Y(near)); ctx.lineTo(w, Y(near)); ctx.stroke();
+  ctx.setLineDash([]);
 
   const poly = (pts, style, width, dash) => {
     if (!pts || pts.length < 2) return;
-    ctx.save(); ctx.strokeStyle = style; ctx.lineWidth = width;
+    ctx.save(); ctx.strokeStyle = style; ctx.lineWidth = width; ctx.lineJoin = "round";
     ctx.setLineDash(dash || []); ctx.beginPath();
-    pts.forEach(([x, y], i) => i ? ctx.lineTo(X(y), Y(x)) : ctx.moveTo(X(y), Y(x)));
+    pts.forEach(([x, y], i) => i ? ctx.lineTo(X(y, x), Y(x)) : ctx.moveTo(X(y, x), Y(x)));
     ctx.stroke(); ctx.restore();
   };
 
+  // The car's own route (PSD), drawn underneath and faint: out here it is the
+  // only source, close in the model is better and is drawn on top of it.
+  const route = psdRoute(d.psd, d.lanes);
+  for (const ln of route.lines) poly(ln.pts, ln.edge ? "#4f4f4f" : "#333", ln.edge ? 2 : 1, ln.edge ? null : [5, 5]);
+  for (const m of route.marks) {
+    const L = Math.max(10, 22 * k(m.x));
+    ctx.save();
+    ctx.strokeStyle = m.ramp ? "#ff9c3a" : "#46b3ff";
+    ctx.lineWidth = m.probable ? 4 : 2; ctx.setLineDash(m.probable ? [] : [4, 3]);
+    ctx.beginPath(); ctx.moveTo(X(m.y, m.x), Y(m.x));
+    ctx.lineTo(X(m.y, m.x) + Math.sin(m.a) * L, Y(m.x) - Math.cos(m.a) * L);
+    ctx.stroke(); ctx.restore();
+  }
+
   const sc = d.scene || {};
-  // map layer underneath, so the model always reads on top of it
   if (showMap && d.osm && d.osm.road_ahead && d.osm.road_ahead.available)
-    poly(d.osm.road_ahead.points, "#2b6cb0", 9, null);
+    poly(d.osm.road_ahead.points, "#2b6cb080", 7, null);
 
   (sc.road_edges || []).forEach(e => e && poly(e.points, "#6b4a2a", 3));
   (sc.lane_lines || []).forEach(l => {
@@ -126,11 +169,11 @@ function draw(cv, d) {
   // radar objects
   const tgt = [d.undertake].filter(r => r.active && r.target).map(r => r.target.id);
   (d.points || []).forEach(p => {
-    if (p.d > viewAhead || Math.abs(p.y) > viewHalf) return;
+    if (Math.abs(p.y) > viewHalf * 1.2) return;
     const hit = tgt.includes(p.id);
-    const cx = X(p.y), rear = Y(p.d);
-    const bw = Math.max(7, (CAR_W / viewHalf) * (w / 2));
-    const bh = Math.max(10, Y(0) - Y(CAR_L));
+    const cx = X(p.y, p.d), rear = Y(p.d);
+    const bw = Math.max(5, CAR_W * sx * k(p.d));
+    const bh = Math.max(6, rear - Y(p.d + CAR_L));
     ctx.fillStyle = hit ? "#ff9c3a" : "#46b3ff";
     // rear edge sits on the reading; the body extends away from us
     ctx.fillRect(cx - bw / 2, rear - bh, bw, bh);
@@ -138,44 +181,53 @@ function draw(cv, d) {
     ctx.fillText(`${(p.v_abs * 3.6).toFixed(0)}`, cx + bw / 2 + 3, rear - 2);
   });
 
-  // Side and rear radar. The car reports presence per side and nothing else --
-  // no distance, no position -- so the car is drawn level with us, one lane
-  // over, with a dashed outline to say the position is assumed rather than
-  // measured. A solid box here would claim knowledge we do not have.
+  const ew = Math.max(7, CAR_W * sx);
+  const eh = Math.max(10, CAR_L * s);
+
+  // Blind spot: the car reports presence per side and nothing else, so the
+  // car is drawn level with us, one lane over, dashed because the position is
+  // assumed rather than measured.
   const bs = d.blindspot || {};
   for (const [side, on] of [["left", bs.left], ["right", bs.right]]) {
     if (!on) continue;
-    const y = side === "left" ? -LANE_W_BEV : LANE_W_BEV;
-    const bw = Math.max(7, (CAR_W / viewHalf) * (w / 2));
-    const bh = Math.max(10, Y(0) - Y(CAR_L));
+    const y = side === "left" ? -LANE_W : LANE_W;
     ctx.save();
     ctx.strokeStyle = "#c77dff"; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
-    ctx.strokeRect(X(y) - bw / 2, EGO_Y - bh * 0.15, bw, bh);
+    ctx.strokeRect(X(y, 0) - ew / 2, EGO_Y - eh * 0.15, ew, eh);
     ctx.restore();
   }
 
   // ego: front bumper on the origin, body drawn backwards
-  const ew = Math.max(7, (CAR_W / viewHalf) * (w / 2));
-  const eh = Math.max(10, Y(0) - Y(CAR_L));
   ctx.fillStyle = "#3ddc84";
-  ctx.fillRect(X(0) - ew / 2, EGO_Y, ew, eh);
-}
-function drawRoute(cv, psd, lanePos) {
-  const ctx = cv.getContext("2d");
-  const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth, h = cv.clientHeight;
-  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  const segs = (psd && psd.segments) || [];
-  if (!segs.length) {
-    ctx.fillStyle = "#666"; ctx.font = "12px system-ui";
-    ctx.fillText("no route from the car", 10, 20); return;
-  }
+  ctx.fillRect(X(0, 0) - ew / 2, EGO_Y, ew, eh);
 
-  // walk the chain in the car's frame: x forward, y right, heading in radians
+  // Side radar, behind us. Closing speed is all it gives: no distance, no side,
+  // so the objects sit in a row under us rather than anywhere on the road.
+  const rear = (d.rear || []).slice().sort((p, q) => q.closing_kph - p.closing_kph);
+  const ry = h - REAR_PX / 2 + 4;
+  ctx.font = "9px system-ui"; ctx.fillStyle = "#555";
+  ctx.fillText(rear.length ? "behind" : "behind: nothing", 4, ry);
+  const cell = 52, x0 = w / 2 - (rear.length - 1) * cell / 2;
+  rear.forEach((o, i) => {
+    const cx = x0 + i * cell, c = o.closing_kph;
+    const col = c >= 20 ? "#ff9c3a" : c > 3 ? "#c77dff" : "#666";
+    ctx.fillStyle = col;
+    ctx.beginPath(); ctx.moveTo(cx - 13, ry - 5); ctx.lineTo(cx - 6, ry - 13); ctx.lineTo(cx + 1, ry - 5); ctx.fill();
+    ctx.fillStyle = "#ddd"; ctx.font = "11px system-ui";
+    ctx.fillText(`${c > 0 ? "+" : ""}${c.toFixed(0)}`, cx + 4, ry - 3);
+  });
+}
+
+// The car's PSD route as polylines in the car frame, shifted so that the lane
+// we are in sits under us. PSD_Pos_Fahrspur is not populated by the car, so the
+// lane comes from the model: rightmost and leftmost are read off laneLineProbs,
+// anything else we do not know and the road is centred on us.
+function psdRoute(psd, lanePos) {
+  const out = { lines: [], marks: [] };
+  const segs = (psd && psd.segments) || [];
+  if (!segs.length) return out;
+
   const pts = [{ s: 0, x: 0, y: 0, th: 0, lanes: (segs[0] && segs[0].lanes) || 1 }];
-  const marks = [];
   let x = 0, y = 0, th = 0, travelled = 0;
   for (const sg of segs) {
     const len = Math.max(2, sg.ends_at_m - sg.at_m);
@@ -195,107 +247,45 @@ function drawRoute(cv, psd, lanePos) {
     }
     if (travelled >= ROUTE_M) break;
   }
-  for (const b of (psd.branches || [])) {
-    if (b.at_m > ROUTE_M) continue;
-    const at = pts.reduce((a, p) => Math.abs(p.s - b.at_m) < Math.abs(a.s - b.at_m) ? p : a, pts[0]);
-    marks.push({ p: at, b });
+
+  const L0 = pts[0].lanes || 1;
+  let idx = (L0 - 1) / 2;
+  if (lanePos && L0 > 1) {
+    if (lanePos.rightmost) idx = L0 - 1;
+    else if (lanePos.leftmost) idx = 0;
   }
+  const shift = (idx + 0.5 - L0 / 2) * LANE_W;
 
-  // fit
-  let minx = 0, maxx = 0, miny = 0, maxy = 0;
-  for (const p of pts) { minx = Math.min(minx, p.x); maxx = Math.max(maxx, p.x);
-                         miny = Math.min(miny, p.y); maxy = Math.max(maxy, p.y); }
-  // leave room for the width of the road itself, not just its centreline
-  const halfRoad = Math.max(1, ...pts.map(p => p.lanes || 1)) * LANE_W / 2;
-  miny -= halfRoad; maxy += halfRoad;
-  const pad = 26;
-  // Along and across the road are scaled separately. At one scale, 400 m of road
-  // in this cell leaves a three-lane carriageway about 9 px wide, which is not a
-  // road anyone can read. Across is therefore stretched until a lane is legible,
-  // capped so bends are not blown out of all proportion. Distances up the screen
-  // stay true; sideways is a schematic, and the factor is shown so nobody reads
-  // a gentle curve as a hairpin.
-  const scY = (h - 2 * pad) / Math.max(40, maxx - minx);
-  const spread = Math.max(4, maxy - miny);
-  const scX = Math.min((w - 2 * pad) / spread, Math.max(scY, 22 / LANE_W));
-  const offx = (w - spread * scX) / 2;
-  const PX = p => offx + (p.y - miny) * scX;
-  const PY = p => h - pad - (p.x - minx) * scY;
-
-  // distance ticks along the road
-  ctx.strokeStyle = "#2a2a2a"; ctx.fillStyle = "#555"; ctx.font = "10px system-ui";
-  for (const p of pts) {
-    if (p.s % 100 || !p.s) continue;
-    ctx.beginPath(); ctx.arc(PX(p), PY(p), 3, 0, 7); ctx.stroke();
-    ctx.fillText(p.s + " m", PX(p) + 6, PY(p) + 3);
-  }
-
-  // the road, drawn with as many lanes as PSD says it has. x is forward and y is
-  // right, so the normal pointing right is (-sin th, cos th) and an offset of o
-  // metres lands at (x - sin(th) o, y + cos(th) o).
-  const off = (p, o) => ({ x: p.x - Math.sin(p.th) * o, y: p.y + Math.cos(p.th) * o });
+  // x is forward and y is right, so the normal pointing right is
+  // (-sin th, cos th) and an offset of o metres lands at (x - sin(th) o, y + cos(th) o).
+  const off = (p, o) => [p.x - Math.sin(p.th) * o, p.y + Math.cos(p.th) * o - shift];
   const maxLanes = Math.max(1, ...pts.map(p => p.lanes || 1));
-  ctx.lineJoin = "round";
   for (let i = 0; i <= maxLanes; i++) {
-    const edge = i === 0 || i === maxLanes;
-    ctx.strokeStyle = edge ? "#d8d8d8" : "#5a5a5a";
-    ctx.lineWidth = edge ? 2.5 : 1.2;
-    ctx.setLineDash(edge ? [] : [5, 5]);
-    ctx.beginPath();
-    let started = false;
+    let cur = [];
+    const flush = () => { if (cur.length > 1) out.lines.push({ pts: cur, edge: i === 0 || i === maxLanes }); cur = []; };
     for (const p of pts) {
       const L = p.lanes || 1;
-      if (i > L) { started = false; continue; }   // lane does not exist here
-      const q = off(p, (i - L / 2) * LANE_W);
-      started ? ctx.lineTo(PX(q), PY(q)) : ctx.moveTo(PX(q), PY(q));
-      started = true;
+      if (i > L) { flush(); continue; }   // lane does not exist here
+      cur.push(off(p, (i - L / 2) * LANE_W));
     }
-    ctx.stroke();
-  }
-  ctx.setLineDash([]);
-
-  // branches as stubs at their own angle
-  for (const m of marks) {
-    const i = pts.indexOf(m.p);
-    const prev = pts[Math.max(0, i - 3)];
-    const base = Math.atan2(m.p.y - prev.y, m.p.x - prev.x);
-    const sign = m.b.side === "right" ? 1 : -1;
-    const a = base + sign * (m.b.angle || 30) * Math.PI / 180;
-    const L = 26;
-    ctx.strokeStyle = m.b.ramp ? "#ff9c3a" : "#46b3ff";
-    ctx.lineWidth = m.b.probable ? 4 : 2;
-    ctx.setLineDash(m.b.probable ? [] : [4, 3]);
-    ctx.beginPath();
-    ctx.moveTo(PX(m.p), PY(m.p));
-    ctx.lineTo(PX(m.p) + Math.sin(a) * L, PY(m.p) - Math.cos(a) * L);
-    ctx.stroke(); ctx.setLineDash([]);
+    flush();
   }
 
-  // us, placed in the lane we believe we are in. PSD_Pos_Fahrspur is not
-  // populated by the car, so the lane comes from the model instead: rightmost
-  // and leftmost are read off laneLineProbs. Anything else we do not know, and
-  // the marker sits in the middle with a ring to say so.
-  const L0 = pts[0].lanes || 1;
-  let idx = (L0 - 1) / 2, known = false;
-  if (lanePos && L0 > 1) {
-    if (lanePos.rightmost) { idx = L0 - 1; known = true; }
-    else if (lanePos.leftmost) { idx = 0; known = true; }
-  } else if (L0 === 1) { known = true; }
-  const me = off(pts[0], (idx + 0.5 - L0 / 2) * LANE_W);
-  ctx.fillStyle = "#3ddc84";
-  ctx.beginPath(); ctx.arc(PX(me), PY(me), 6, 0, 7); ctx.fill();
-  if (!known) {
-    ctx.strokeStyle = "#3ddc8480"; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.arc(PX(me), PY(me), 11, 0, 7); ctx.stroke();
+  // branches as stubs at their own angle, from the edge on their side
+  for (const b of (psd.branches || [])) {
+    if (b.at_m > ROUTE_M) continue;
+    const i = pts.reduce((bi, p, j) => Math.abs(p.s - b.at_m) < Math.abs(pts[bi].s - b.at_m) ? j : bi, 0);
+    const p = pts[i], prev = pts[Math.max(0, i - 3)];
+    const sign = b.side === "right" ? 1 : -1;
+    const [bx, by] = off(p, sign * (p.lanes || 1) * LANE_W / 2);
+    const heading = Math.atan2(p.y - prev.y, p.x - prev.x);
+    // screen angle: 0 = straight up the screen, positive = to the right
+    out.marks.push({ x: bx, y: by, a: heading + sign * (b.angle || 30) * Math.PI / 180,
+                     ramp: b.ramp, probable: b.probable });
   }
-
-  if (scX > scY * 1.5) {
-    ctx.fillStyle = "#555"; ctx.font = "9px system-ui";
-    ctx.fillText("sideways \u00d7" + (scX / scY).toFixed(0), 4, h - 5);
-  }
-
-
+  return out;
 }
+
 // One frame everywhere: x metres ahead, y metres to the RIGHT. The radar's
 // opposite sign is flipped on the device, never here.
 //
@@ -304,7 +294,6 @@ function drawRoute(cv, psd, lanePos) {
 // on top of the DBC offset to approximate the gap to the rear of the object.
 const CAR_L = 4.6;        // metres, drawn to scale
 const CAR_W = 1.85;
-const LANE_W_BEV = 3.5;
 let viewHalf = 8, viewAhead = 140, showMap = true;
 const ROUTE_M = 500;
 const LANE_W = 3.5;   // metres, for drawing only
@@ -335,21 +324,19 @@ function render(d) {
        seen ? `${kph(seen.v_abs * 3.6)} km/h · ${seen.d.toFixed(0)} m · ${L.diff_kph > 0 ? "+" : ""}${L.diff_kph}`
             : "nothing in range");
 
-  // context under each view
+  // context for the view, radar and model first, then what PSD says -- not
+  // what we would infer from it. Curvature does not describe tight corners, so
+  // no speed is derived from the road ahead.
   const lanes = d.lanes || {}, bs2 = d.blindspot || {};
   const bsTxt = [bs2.left ? "L" : null, bs2.right ? "R" : null].filter(Boolean).join("+");
-  set("bevfoot", `${(d.points || []).length} objects${bsTxt ? " · blind spot " + bsTxt : ""} · `
-      + `${lanes.rightmost ? "rightmost" : lanes.leftmost ? "leftmost" : "middle"} · `
-      + `edges ${lanes.left_edge_m ?? "?"}/${lanes.right_edge_m ?? "?"} m`);
-
-  // What PSD says, not what we would infer from it. Curvature does not describe
-  // tight corners, so no speed is derived from the road ahead any more.
   const p = d.psd || {}, here = p.here;
   const nextBranch = (p.branches || [])[0];
-  set("routefoot", here
-      ? `${here.category} · ${here.lanes} lane(s)`
-        + (nextBranch ? ` · ${nextBranch.ramp ? "ramp" : "turning"} ${nextBranch.side} in ${nextBranch.at_m} m` : "")
-      : "no route");
+  set("bevfoot", `${(d.points || []).length} objects${bsTxt ? " · blind spot " + bsTxt : ""} · `
+      + `${lanes.rightmost ? "rightmost" : lanes.leftmost ? "leftmost" : "middle"} · `
+      + `edges ${lanes.left_edge_m ?? "?"}/${lanes.right_edge_m ?? "?"} m<br>`
+      + (here ? `${here.category} · ${here.lanes} lane(s)`
+                + (nextBranch ? ` · ${nextBranch.ramp ? "ramp" : "turning"} ${nextBranch.side} in ${nextBranch.at_m} m` : "")
+              : "no route from the car"));
 
   const osm = d.osm || {}, live = osm.live || {};
   set("s1", `${live.road_name || "–"}${live.speed_limit_kph ? " · " + live.speed_limit_kph + " km/h" : ""}`
@@ -358,7 +345,8 @@ function render(d) {
       + ` · guidance ${p.guidance === null || p.guidance === undefined ? "?" : p.guidance ? "on" : "off"}`
       + " · shadow only");
 
-  // raw side-assist frames, undecoded. Bytes that have been seen to change are
+  // raw side-assist frames, only partly decoded (closing speed, drawn behind
+  // us). Bytes that have been seen to change are
   // brighter; the rest have held one value the whole session.
   const sr = d.side_raw || {}, sl = d.side_live || {};
   document.getElementById("raw").innerHTML = ["0x24C", "0x24D"].map(k => {
@@ -371,7 +359,6 @@ function render(d) {
   }).join("<br>");
 
   draw(document.getElementById("bev"), d);
-  drawRoute(document.getElementById("route"), p, lanes);
 }
 
 document.getElementById("bw").onclick = e => {

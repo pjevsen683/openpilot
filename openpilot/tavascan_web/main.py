@@ -25,7 +25,7 @@ from openpilot.cereal import messaging
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 from opendbc.car.common.conversions import Conversions as CV
-from openpilot.tavascan_web import geometry, osm, psd as psd_mod, server, shadow
+from openpilot.tavascan_web import geometry, osm, psd as psd_mod, server, shadow, sideradar
 
 PORT = int(os.getenv("TAVASCAN_WEB_PORT", "8088"))
 TRACE = os.getenv("TAVASCAN_WEB_TRACE", "/data/tavascan_shadow.jsonl")
@@ -63,11 +63,10 @@ def _collect() -> None:
   # PSD is not in the cereal schema, so it is read straight off the bus.
   can_sock = messaging.sub_sock("can", timeout=0)
   psd = psd_mod.PSD()
-  # Raw side-assist frames, shown as hex so they can be stared at. Nothing
-  # decodes them yet: the front radar's layout produced -461 km/h and 32 m
-  # lateral offsets when applied here, and a byte that tracked one overtake at
-  # r=0.98 gave slopes spanning a factor of ten across four more.
+  # Raw side-assist frames, still shown as hex: only the closing speed of each
+  # object behind us is decoded (see sideradar), the rest is not understood.
   side_raw = {"0x24C": None, "0x24D": None}
+  rear: list = []
   side_seen: dict = {}
   rk = Ratekeeper(10.0)
   points: list = []
@@ -89,6 +88,8 @@ def _collect() -> None:
           raw = bytes(c.dat)
           key = "0x%X" % c.address
           side_raw[key] = raw.hex()
+          if c.address == 0x24D:
+            rear = sideradar.objects(raw)
           # remember which byte positions have ever moved, so the page can mark
           # the live ones instead of a wall of identical numbers
           was = side_seen.get(key)
@@ -142,6 +143,9 @@ def _collect() -> None:
       # than anywhere in particular. opendbc decodes it from
       # MEB_Side_Assist_01 into carState, so no raw CAN needed here.
       "side_raw": dict(side_raw),
+      # Objects behind us, closing speed only: the side radar does not tell us
+      # how far back they are or which side they are on.
+      "rear": rear,
       "side_live": {k: [len(x) > 1 for x in v] for k, v in side_seen.items()},
       "blindspot": {"left": bool(sm["carState"].leftBlindspot),
                     "right": bool(sm["carState"].rightBlindspot)},
@@ -197,6 +201,7 @@ def trace_record(snap: dict) -> dict:
     "undertake": snap.get("undertake"),
     "left_lane": snap.get("left_lane"),
     "blindspot": snap.get("blindspot"),
+    "rear": snap.get("rear"),
     "points": snap.get("points"),
     "lanes": snap.get("lanes"),
     "lane_probs": [l["prob"] if l else None for l in (sc.get("lane_lines") or [])],
