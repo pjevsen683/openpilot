@@ -63,11 +63,8 @@ def _collect() -> None:
   # PSD is not in the cereal schema, so it is read straight off the bus.
   can_sock = messaging.sub_sock("can", timeout=0)
   psd = psd_mod.PSD()
-  # Raw side-assist frames, still shown as hex: only the closing speed of each
-  # object behind us is decoded (see sideradar), the rest is not understood.
-  side_raw = {"0x24C": None, "0x24D": None}
+  # Objects behind us from the side radar; only their closing speed is decoded.
   rear: list = []
-  side_seen: dict = {}
   rk = Ratekeeper(10.0)
   points: list = []
   last_radar = 0.0
@@ -84,20 +81,8 @@ def _collect() -> None:
       for c in m.can:
         if c.src == psd_mod.BUS and c.address in (psd_mod.ADDR_04, psd_mod.ADDR_05, psd_mod.ADDR_06):
           psd.feed(c.address, bytes(c.dat))
-        elif c.src == 0 and c.address in (0x24C, 0x24D):
-          raw = bytes(c.dat)
-          key = "0x%X" % c.address
-          side_raw[key] = raw.hex()
-          if c.address == 0x24D:
-            rear = sideradar.objects(raw)
-          # remember which byte positions have ever moved, so the page can mark
-          # the live ones instead of a wall of identical numbers
-          was = side_seen.get(key)
-          if was is None:
-            side_seen[key] = [set([v]) for v in raw]
-          else:
-            for i, v in enumerate(raw[:len(was)]):
-              was[i].add(v)
+        elif c.src == 0 and c.address == 0x24D:
+          rear = sideradar.objects(bytes(c.dat))
 
     if sm.updated["radarTracks"]:
       points = geometry.radar_points(sm["radarTracks"], v_ego)
@@ -142,13 +127,11 @@ def _collect() -> None:
       # position -- so this is a yes or no per side, drawn alongside us rather
       # than anywhere in particular. opendbc decodes it from
       # MEB_Side_Assist_01 into carState, so no raw CAN needed here.
-      "side_raw": dict(side_raw),
+      "blindspot": {"left": bool(sm["carState"].leftBlindspot),
+                    "right": bool(sm["carState"].rightBlindspot)},
       # Objects behind us, closing speed only: the side radar does not tell us
       # how far back they are or which side they are on.
       "rear": rear,
-      "side_live": {k: [len(x) > 1 for x in v] for k, v in side_seen.items()},
-      "blindspot": {"left": bool(sm["carState"].leftBlindspot),
-                    "right": bool(sm["carState"].rightBlindspot)},
       "scene": geometry.scene(sm["modelV2"]),
       "lanes": lanes,
       "osm": osm_view,
