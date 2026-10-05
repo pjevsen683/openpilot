@@ -83,7 +83,12 @@ class PSD:
 
   # --- ingestion -----------------------------------------------------------
   def feed(self, address: int, data: bytes) -> None:
-    if len(data) < 8:
+    # The car interleaves all-zero frames with the real ones on PSD_05 and
+    # PSD_06 -- about one in twelve. Taken at face value they reset the route
+    # guidance flag and the distance to the end of the segment every few
+    # seconds, which made guidance look like it was flickering on and off on
+    # drives where every real frame said it was on.
+    if len(data) < 8 or not any(data):
       return
     now = time.monotonic()
     if address == ADDR_04:
