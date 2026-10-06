@@ -30,6 +30,10 @@ LOG_MAX_BYTES = 16 * 1024 * 1024
 QUIET_S = 30.0          # a bit must have held this long before its flip is written
 SLEEP_GAP_S = 5.0       # no frames for this long means the bus has gone to sleep
 SNAPSHOT_AFTER_S = 3.0  # wait for every message to have arrived at least once
+# A bit's FIRST flip after waking is written if its message has been running
+# this long. Unplugging can follow unlocking within seconds, well inside
+# QUIET_S, and counters have all flipped once within their first second.
+FIRST_FLIP_AFTER_S = 3.0
 
 
 class BitWatch:
@@ -39,6 +43,7 @@ class BitWatch:
     self.value: dict[tuple[int, int], int] = {}
     self.raw: dict[tuple[int, int], bytes] = {}
     self.last_flip: dict[tuple[int, int], dict[int, float]] = {}
+    self.first_seen: dict[tuple[int, int], float] = {}
     self.awake_since: float | None = None
     self.last_frame: float | None = None
     self.snapshot_done = False
@@ -55,14 +60,13 @@ class BitWatch:
     if self.awake_since is None:
       self.awake_since = t
       self.snapshot_done = False
-      # everything is recent again: flips straight after waking are the bus
-      # starting up, which the wake snapshot already covers
-      for flips in self.last_flip.values():
-        for b in flips:
-          flips[b] = t
+      # forget earlier wakes: a bit's history from hours ago says nothing
+      self.last_flip.clear()
+      self.first_seen.clear()
     self.last_frame = t
 
     key = (bus, addr)
+    self.first_seen.setdefault(key, t)
     v = int.from_bytes(dat, "little")
     old = self.value.get(key)
     self.value[key] = v
@@ -74,10 +78,12 @@ class BitWatch:
         low = x & -x
         bit = low.bit_length() - 1
         x ^= low
-        prev = flips.get(bit, self.awake_since)
-        if t - prev >= QUIET_S:
+        prev = flips.get(bit)
+        quiet = (t - self.first_seen[key] >= FIRST_FLIP_AFTER_S) if prev is None else (t - prev >= QUIET_S)
+        if quiet:
           out.append({"kind": "flip", "t": t, "bus": bus, "addr": f"{addr:x}", "bit": bit,
-                      "to": (v >> bit) & 1, "held_s": round(t - prev, 1)})
+                      "to": (v >> bit) & 1,
+                      "held_s": round(t - (prev if prev is not None else self.first_seen[key]), 1)})
         flips[bit] = t
 
     if not self.snapshot_done and t - self.awake_since >= SNAPSHOT_AFTER_S:
