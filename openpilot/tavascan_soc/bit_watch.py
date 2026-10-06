@@ -106,7 +106,7 @@ def main() -> None:
     # Manager only runs this offroad, but it can also be started by hand, and
     # then nothing stops it once the car drives off. Driving makes thousands of
     # flips a minute, none of them about the plug, so stand aside.
-    if params.get_bool("IsOnroad"):
+    if not params.get_bool("IsOffroad"):
       messaging.drain_sock(sock)
       w = BitWatch()
       time.sleep(5)
