@@ -21,6 +21,7 @@ SOC_A/SOC_B. See BATTERI-SOC-NOTER.md.
 """
 import json
 import os
+import signal
 import time
 
 from openpilot.common.swaglog import cloudlog
@@ -33,6 +34,9 @@ MQTT_HOST = os.getenv("TAVASCAN_MQTT_HOST", "10.0.1.198")
 MQTT_PORT = int(os.getenv("TAVASCAN_MQTT_PORT", "1883"))
 INTERVAL_S = float(os.getenv("TAVASCAN_INTERVAL", "60"))
 SAMPLE_S = float(os.getenv("TAVASCAN_SAMPLE_S", "6"))
+# On the way out: manager sends SIGKILL 5 s after SIGINT.
+LAST_SAMPLE_S = 1.0
+LAST_PUBLISH_TIMEOUT_S = 2.0
 
 # SoC is calibrated against the car's own display: a quadratic in the raw counter.
 # A straight line was good enough over the range it was fitted on, but it read low
@@ -199,7 +203,66 @@ def sample(sock, duration: float) -> tuple[bool, dict]:
   return seen > 0, signals.decode(frames)
 
 
+def build_state(latest: dict, last_ts: float | None, awake: bool, fresh: bool, volt: float | None) -> dict:
+  raw = latest.get("energy_raw")
+  plug = latest.get("plug_state")
+  doors = [latest.get(k) for k in ("door_driver", "door_pass", "door_rear_l", "door_rear_r", "tailgate")]
+  known = [d for d in doors if d is not None]
+  return {
+    "awake": awake,
+    "raw": raw,
+    "soc_pct": round(min(100.0, max(0.0, SOC_A2 * raw * raw + SOC_A * raw + SOC_B)), 1) if raw else None,
+    "odometer_km": int(latest["odometer_km"]) if "odometer_km" in latest else None,
+    "climate_w": int(latest["climate_w"]) if "climate_w" in latest else None,
+    "locked": latest.get("locked"),
+    "any_door_open": (any(known) if known else None),
+    # The bus sleeps with the plug in, so this is the state at the last
+    # wake-up. Plugging in or out wakes the car, so that is never stale for long.
+    "plugged_in": (plug != 0) if plug is not None else None,
+    "plug_raw": int(plug) if plug is not None else None,
+    "volt12": volt,
+    "age_s": int(time.time() - last_ts) if last_ts else None,
+    "fresh": fresh,
+    # Every message is retained, so a subscriber that connects hours later is
+    # handed this payload as if it had just arrived -- and age_s, being the age
+    # at publication, still reads 0. Without an absolute stamp there is no way
+    # to tell a live reading from a stored one. This is that stamp.
+    "ts": int(time.time()),
+  }
+
+
+def _raise_interrupt(signum, frame):
+  raise KeyboardInterrupt
+
+
+def last_word(can_sock, latest: dict, history: list, last_ts: float | None, volt: float | None) -> None:
+  """One more look at the bus on the way out, and publish it.
+
+  Manager stops this process the moment the car goes onroad. Unplugging and
+  driving off inside a minute is the usual way to leave, so the once-a-minute
+  sample tends to miss it, and the last thing published -- plug in -- then
+  stands in HA until the entities expire. The bus is awake at that moment, so
+  read it once more rather than assume: the car can be switched on with the
+  plug still in. Manager allows 5 s before SIGKILL, so this stays inside that.
+  """
+  awake, decoded = sample(can_sock, LAST_SAMPLE_S)
+  if not decoded:
+    return
+  latest.update(decoded)
+  last_ts = time.time()
+  state = build_state(latest, last_ts, awake, True, volt)
+  write_state(state, history, latest, last_ts)
+  try:
+    publish(MQTT_HOST, MQTT_PORT, "tavascan-comma", [(AVAIL_TOPIC, "online"), (STATE_TOPIC, json.dumps(state))],
+            timeout=LAST_PUBLISH_TIMEOUT_S)
+  except OSError:
+    pass
+
+
 def main() -> None:
+  # Manager stops us with SIGINT; a plain kill sends SIGTERM. Both should get
+  # the last word in rather than dying mid-sleep.
+  signal.signal(signal.SIGTERM, _raise_interrupt)
   can_sock = messaging.sub_sock("can", timeout=100)
   sm = messaging.SubMaster(["pandaStates"])
   discovery_sent = False
@@ -207,71 +270,51 @@ def main() -> None:
   if latest:
     cloudlog.info("tavascan_soc: restored %d signals from the previous run", len(latest))
   rk = Ratekeeper(1.0 / INTERVAL_S)
+  volt = None
 
   cloudlog.info(f"tavascan_soc: publishing to {MQTT_HOST}:{MQTT_PORT} every {INTERVAL_S:.0f}s")
 
-  while True:
-    awake, decoded = sample(can_sock, SAMPLE_S)
-    if decoded:
-      latest.update(decoded)
-      last_ts = time.time()
+  try:
+    while True:
+      awake, decoded = sample(can_sock, SAMPLE_S)
+      if decoded:
+        latest.update(decoded)
+        last_ts = time.time()
 
-    volt = None
-    try:
-      sm.update(0)
-      for ps in sm["pandaStates"]:
-        if ps.voltage:
-          volt = round(ps.voltage / 1000.0, 2)
-    except Exception:
-      pass
+      volt = None
+      try:
+        sm.update(0)
+        for ps in sm["pandaStates"]:
+          if ps.voltage:
+            volt = round(ps.voltage / 1000.0, 2)
+      except Exception:
+        pass
 
-    raw = latest.get("energy_raw")
-    plug = latest.get("plug_state")
-    doors = [latest.get(k) for k in ("door_driver", "door_pass", "door_rear_l", "door_rear_r", "tailgate")]
-    known = [d for d in doors if d is not None]
+      state = build_state(latest, last_ts, awake, bool(decoded), volt)
 
-    state = {
-      "awake": awake,
-      "raw": raw,
-      "soc_pct": round(min(100.0, max(0.0, SOC_A2 * raw * raw + SOC_A * raw + SOC_B)), 1) if raw else None,
-      "odometer_km": int(latest["odometer_km"]) if "odometer_km" in latest else None,
-      "climate_w": int(latest["climate_w"]) if "climate_w" in latest else None,
-      "locked": latest.get("locked"),
-      "any_door_open": (any(known) if known else None),
-      # The bus sleeps with the plug in, so this is the state at the last
-      # wake-up. Plugging in or out wakes the car, so that is never stale for long.
-      "plugged_in": (plug != 0) if plug is not None else None,
-      "plug_raw": int(plug) if plug is not None else None,
-      "volt12": volt,
-      "age_s": int(time.time() - last_ts) if last_ts else None,
-      "fresh": bool(decoded),
-      # Every message is retained, so a subscriber that connects hours later is
-      # handed this payload as if it had just arrived -- and age_s, being the age
-      # at publication, still reads 0. Without an absolute stamp there is no way
-      # to tell a live reading from a stored one. This is that stamp.
-      "ts": int(time.time()),
-    }
+      if state["soc_pct"] is not None:
+        history.append([int(time.time()), state["soc_pct"]])
+        del history[:-HISTORY_MAX]
+      write_state(state, history, latest, last_ts)
 
-    if state["soc_pct"] is not None:
-      history.append([int(time.time()), state["soc_pct"]])
-      del history[:-HISTORY_MAX]
-    write_state(state, history, latest, last_ts)
+      msgs = []
+      if not discovery_sent:
+        msgs += discovery_messages()
+      msgs.append((AVAIL_TOPIC, "online"))
+      msgs.append((STATE_TOPIC, json.dumps(state)))
 
-    msgs = []
-    if not discovery_sent:
-      msgs += discovery_messages()
-    msgs.append((AVAIL_TOPIC, "online"))
-    msgs.append((STATE_TOPIC, json.dumps(state)))
+      try:
+        publish(MQTT_HOST, MQTT_PORT, "tavascan-comma", msgs)
+        discovery_sent = True
+      except OSError as e:
+        # Expected when the car is not on the home WiFi. Not an error.
+        cloudlog.debug(f"tavascan_soc: broker unreachable ({e})")
+        discovery_sent = False
 
-    try:
-      publish(MQTT_HOST, MQTT_PORT, "tavascan-comma", msgs)
-      discovery_sent = True
-    except OSError as e:
-      # Expected when the car is not on the home WiFi. Not an error.
-      cloudlog.debug(f"tavascan_soc: broker unreachable ({e})")
-      discovery_sent = False
-
-    rk.keep_time()
+      rk.keep_time()
+  except KeyboardInterrupt:
+    last_word(can_sock, latest, history, last_ts, volt)
+    raise
 
 
 if __name__ == "__main__":
