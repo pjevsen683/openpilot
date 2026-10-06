@@ -98,6 +98,9 @@ SENSORS = [
   ("climate_power", "Tavascan Climate Power", "W", "power", "climate_w", "measurement"),
   ("volt12", "Tavascan 12V Battery", "V", "voltage", "volt12", "measurement"),
   ("age", "Tavascan CAN Age", "s", "duration", "age_s", None),
+  # Raw plug state, so a value other than the 0 and 5 seen so far shows up in
+  # HA instead of silently being read as "plugged in".
+  ("plug_raw", "Tavascan Plug State raw", None, None, "plug_raw", "measurement"),
 ]
 
 # key, name, field in state, device_class
@@ -105,6 +108,7 @@ BINARY_SENSORS = [
   ("awake", "Tavascan CAN Awake", "awake", None),
   ("locked", "Tavascan Locked", "locked", "lock"),
   ("door_open", "Tavascan Door Open", "any_door_open", "door"),
+  ("plugged", "Tavascan Plugged In", "plugged_in", "plug"),
 ]
 
 
@@ -222,6 +226,7 @@ def main() -> None:
       pass
 
     raw = latest.get("energy_raw")
+    plug = latest.get("plug_state")
     doors = [latest.get(k) for k in ("door_driver", "door_pass", "door_rear_l", "door_rear_r", "tailgate")]
     known = [d for d in doors if d is not None]
 
@@ -233,6 +238,10 @@ def main() -> None:
       "climate_w": int(latest["climate_w"]) if "climate_w" in latest else None,
       "locked": latest.get("locked"),
       "any_door_open": (any(known) if known else None),
+      # The bus sleeps with the plug in, so this is the state at the last
+      # wake-up. Plugging in or out wakes the car, so that is never stale for long.
+      "plugged_in": (plug != 0) if plug is not None else None,
+      "plug_raw": int(plug) if plug is not None else None,
       "volt12": volt,
       "age_s": int(time.time() - last_ts) if last_ts else None,
       "fresh": bool(decoded),

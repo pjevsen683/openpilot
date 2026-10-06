@@ -11,6 +11,7 @@ the sampling window. Without that you get jumps of several percent for no reason
 ADDR_HVEM_02 = 0x5AC       # energy and climate power
 ADDR_DIAGNOSE_01 = 0x6B2   # odometer
 ADDR_ZV_02 = 0x583         # central locking and doors
+ADDR_PLUG = 0x272          # charge plug; not in the DBC
 
 
 def _bits(data: bytes, start: int, length: int) -> int:
@@ -25,6 +26,12 @@ NUMERIC = {
   "energy_raw":   (ADDR_HVEM_02, 32, 11, 1.0, 1, 2040),
   "climate_w":    (ADDR_HVEM_02, 24, 8, 50.0, 0, 254),
   "odometer_km":  (ADDR_DIAGNOSE_01, 8, 20, 1.0, 1, 1048570),
+  # Charge plug: 5 with the plug in, 0 without. Found by recording the bus
+  # while parked and checked both ways against the go-e wallbox on 2026-10-06:
+  # 5 -> 0 at 06:16:48.9 (wallbox 06:16:51), 0 -> 5 at 17:30:06 (wallbox
+  # 17:30:11), and 0 in every wake-up and every drive in between. Only 0 and 5
+  # have been seen; anything else is passed through raw rather than guessed at.
+  "plug_state":   (ADDR_PLUG, 28, 4, 1.0, 0, 15),
 }
 
 # Bit signals: name -> (address, bit)
@@ -40,7 +47,7 @@ BOOLEAN = {
   "tailgate":     (ADDR_ZV_02, 28),
 }
 
-WANTED_ADDRS = {ADDR_HVEM_02, ADDR_DIAGNOSE_01, ADDR_ZV_02}
+WANTED_ADDRS = {ADDR_HVEM_02, ADDR_DIAGNOSE_01, ADDR_ZV_02, ADDR_PLUG}
 
 
 def decode(frames: dict[int, list[bytes]]) -> dict:
