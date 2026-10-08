@@ -39,31 +39,30 @@ LAST_SAMPLE_S = 1.0
 LAST_PUBLISH_TIMEOUT_S = 2.0
 
 # SoC is calibrated against the car's own display: a quadratic in the raw counter.
-# A straight line was good enough over the range it was fitted on, but it read low
-# at the top -- 98.3 % with the car showing 100 %. A full charge gave the missing
-# end point: the counter settled at 1405 and stayed there for over twenty minutes,
-# so that is genuinely full rather than a display rounding up early.
+# A straight line was good enough over the range it was first fitted on, but
+# read low at the top. A full charge gave the top end -- the counter settled at
+# 1405 and stayed there for over twenty minutes -- and a nearly empty battery on
+# 2026-10-08 gave the bottom: raw 86 with the car showing 13 %, where the
+# previous fit, extrapolated from 40 %, said 17.2.
 #
-#   raw   car    line    quadratic
-#   493    40    39.1      40.0
-#   699    53    52.6      52.5
-#   785    57    58.3      57.9
-#   925    67    67.5      66.9
-#  1114    80    80.0      79.6
-#  1195    85    85.3      85.1
-#  1405   100    99.2     100.1
+#   raw   car    fit
+#    86    13    13.3
+#   493    40    39.1
+#   699    53    52.4
+#   785    57    58.0
+#   925    67    67.3
+#  1114    80    79.9
+#  1195    85    85.3
+#  1405   100    99.6
 #
-# Worst error falls from 1.3 to 0.9 pp, and the top end stops reading low. The
-# curve rises throughout the usable range -- its turning point is at raw -3457,
-# nowhere near -- so it cannot fold back on itself at low charge.
-#
-# OPEN: still nothing below 40 %. At raw 0 the fit says 12.7 %, which is the
-# reserve under the display's zero, but that is extrapolation and a quadratic
-# extrapolates worse than a line. The raw counter is published as its own sensor
-# so a low-charge point can be picked up if the car is ever run down that far.
-SOC_A2 = float(os.getenv("TAVASCAN_SOC_A2", "7.478e-6"))
-SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.051708"))
-SOC_B = float(os.getenv("TAVASCAN_SOC_B", "12.672"))
+# Worst error 1.0 pp, against a display that only shows whole percent. The curve
+# rises everywhere from raw 0 to full, so it cannot fold back at low charge.
+# The average slope, 0.065 % per count, is 76 kWh at the DBC's 50 Wh per count,
+# which is the car's 77 kWh -- the counter is energy, offset from the display's
+# zero, not a different scale.
+SOC_A2 = float(os.getenv("TAVASCAN_SOC_A2", "2.4192e-6"))
+SOC_A = float(os.getenv("TAVASCAN_SOC_A", "0.061823"))
+SOC_B = float(os.getenv("TAVASCAN_SOC_B", "8.0104"))
 
 # The same state is also written here every cycle, so the offroad web page can
 # show the car without sampling CAN a second time -- and so the last reading
