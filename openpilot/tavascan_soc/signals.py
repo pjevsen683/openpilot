@@ -12,6 +12,7 @@ ADDR_HVEM_02 = 0x5AC       # energy and climate power
 ADDR_DIAGNOSE_01 = 0x6B2   # odometer
 ADDR_ZV_02 = 0x583         # central locking and doors
 ADDR_PLUG = 0x272          # charge plug; not in the DBC
+ADDR_SOC = 0x14A           # state of charge; not in the DBC
 
 
 def _bits(data: bytes, start: int, length: int) -> int:
@@ -32,6 +33,14 @@ NUMERIC = {
   # 17:30:11), and 0 in every wake-up and every drive in between. Only 0 and 5
   # have been seen; anything else is passed through raw rather than guessed at.
   "plug_state":   (ADDR_PLUG, 28, 4, 1.0, 0, 15),
+  # State of charge in half percent, byte 19 of a 32-byte message on bus 1.
+  # Found on 2026-10-10 as the only field outside HVEM_02 that follows the
+  # energy counter across every drive (r = 0.999); the other bytes are a
+  # checksum, a counter and constants. Its offset from the energy-based
+  # estimate changes from drive to drive (+0.5 to +3.3 pp) but holds within a
+  # drive, which is what a true SoC does next to an energy figure that moves
+  # with battery temperature. Zero is treated as unpopulated, like the energy.
+  "soc_pct":      (ADDR_SOC, 152, 8, 0.5, 1, 200),
 }
 
 # Bit signals: name -> (address, bit)
@@ -47,7 +56,7 @@ BOOLEAN = {
   "tailgate":     (ADDR_ZV_02, 28),
 }
 
-WANTED_ADDRS = {ADDR_HVEM_02, ADDR_DIAGNOSE_01, ADDR_ZV_02, ADDR_PLUG}
+WANTED_ADDRS = {ADDR_HVEM_02, ADDR_DIAGNOSE_01, ADDR_ZV_02, ADDR_PLUG, ADDR_SOC}
 
 
 def decode(frames: dict[int, list[bytes]]) -> dict:
