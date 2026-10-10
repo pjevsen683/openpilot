@@ -13,11 +13,12 @@ per signal, and an age sensor shows how old the reading is. The 12V voltage is
 the exception: it comes from the panda, not from CAN, and stays fresh even
 while the bus sleeps.
 
-SoC: the ratio between the raw value and the car's displayed SoC is NOT
-proportional, so neither the DBC's 50 Wh nor the 62.5 Wh we first guessed give
-a believable capacity (68.9 and 86.1 kWh respectively, against the car's 77).
-SoC is therefore computed from a linear calibration against the display, see
-SOC_A/SOC_B. See BATTERI-SOC-NOTER.md.
+SoC: read directly from 0x14A (see signals.py). Until 2026-10-10 it was
+computed from the usable-energy counter in HVEM_02 with a calibration against
+the display, see SOC_A/SOC_B. That estimate reads 1-3 pp low on a cold battery,
+because usable energy drops with temperature while the SoC does not. It is
+still published, as "soc_energy", and used when 0x14A is missing.
+See BATTERI-SOC-NOTER.md.
 """
 import json
 import os
@@ -93,6 +94,8 @@ DEVICE = {
 # key, name, unit, device_class, field in state, state_class
 SENSORS = [
   ("soc", "Tavascan SoC", "%", "battery", "soc_pct", "measurement"),
+  # The older estimate from the energy counter, kept to compare against.
+  ("soc_energy", "Tavascan SoC from energy", "%", "battery", "soc_energy_pct", "measurement"),
   # Uncalibrated raw counter from HVEM_02. Exposed on purpose so it can be logged
   # in HA's long-term statistics and compared against the car's own display over a
   # wide SoC range.
@@ -204,13 +207,16 @@ def sample(sock, duration: float) -> tuple[bool, dict]:
 
 def build_state(latest: dict, last_ts: float | None, awake: bool, fresh: bool, volt: float | None) -> dict:
   raw = latest.get("energy_raw")
+  soc_energy = round(min(100.0, max(0.0, SOC_A2 * raw * raw + SOC_A * raw + SOC_B)), 1) if raw else None
+  soc = latest.get("soc_pct")
   plug = latest.get("plug_state")
   doors = [latest.get(k) for k in ("door_driver", "door_pass", "door_rear_l", "door_rear_r", "tailgate")]
   known = [d for d in doors if d is not None]
   return {
     "awake": awake,
     "raw": raw,
-    "soc_pct": round(min(100.0, max(0.0, SOC_A2 * raw * raw + SOC_A * raw + SOC_B)), 1) if raw else None,
+    "soc_pct": soc if soc is not None else soc_energy,
+    "soc_energy_pct": soc_energy,
     "odometer_km": int(latest["odometer_km"]) if "odometer_km" in latest else None,
     "climate_w": int(latest["climate_w"]) if "climate_w" in latest else None,
     "locked": latest.get("locked"),
