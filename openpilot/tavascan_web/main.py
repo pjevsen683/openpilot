@@ -105,7 +105,10 @@ def _collect() -> None:
     lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
     md = sm["modelV2"]
     on_path = shadow.along_path(points, md.position.x, md.position.y)
-    ut = shadow.undertake(on_path, v_ego, lanes["rightmost"])
+    # The same set speed the planner hands the guard; see v_cruise_kph below.
+    v_set_kph = sm["carState"].vCruise
+    v_set = v_set_kph * CV.KPH_TO_MS if 0 < v_set_kph < 250 else None
+    ut = shadow.undertake(on_path, v_ego, lanes["rightmost"], v_set)
     left = shadow.left_lane_report(on_path, v_ego)
     psd_snap = psd.snapshot()
 

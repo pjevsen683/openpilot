@@ -128,7 +128,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     # Undertaking guard: only ever lowers the desired speed, never raises it.
     # Off unless the UndertakeGuard parameter is set.
-    self.undertake_guard.update(sm, v_ego, self.dt)
+    self.undertake_guard.update(sm, v_ego, v_cruise, self.dt)
     v_cruise = self.undertake_guard.apply(v_cruise)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)

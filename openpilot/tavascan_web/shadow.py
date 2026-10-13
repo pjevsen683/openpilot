@@ -35,6 +35,14 @@ UT_SLIP = 4 * CV.KPH_TO_MS            # tolerated speed excess
 # and 45 km/h, both on 80 km/h roads. Real left-lane traffic below this is a
 # queue, where passing on the right is allowed anyway.
 UT_MIN_TARGET_SPEED = 50 * CV.KPH_TO_MS
+# Where to settle: this many seconds behind the left-lane car, measured along
+# the road. Further back than that we may still close in, by at most UT_SLIP
+# faster than it; closer than that we drop back, by at most UT_BACKOFF slower.
+# Between the two the cap moves UT_GAP_GAIN m/s per metre of gap error, so 10 m
+# too close asks for 2 m/s less, clipped to UT_BACKOFF.
+UT_GAP_S = 1.0
+UT_GAP_GAIN = 0.2                     # 1/s
+UT_BACKOFF = 5 * CV.KPH_TO_MS
 
 def along_path(points: list, path_x, path_y) -> list:
   """Points with their lateral offset measured from our planned path.
@@ -78,16 +86,25 @@ def _closest(points: list, lat: tuple, max_range: float):
   return best
 
 
-def undertake(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
-  """Would we be undertaking a slower vehicle in the left lane?"""
+def undertake(points: list, v_ego: float, rightmost_lane: bool | None,
+              v_cruise: float | None = None) -> dict:
+  """Would we be undertaking a slower vehicle in the left lane?
+
+  "Slower" is judged against the speed we want, v_cruise, not the speed we are
+  doing. Once the cap has brought us down to the left car's speed we are no
+  longer faster than it, but we still would be the moment the cap let go;
+  judging by v_ego would release the cap, let us speed up and catch it again,
+  over and over. Without a set speed (not engaged) v_ego stands in for it.
+  """
   moving = [p for p in points if p["v_abs"] >= UT_MIN_TARGET_SPEED]
   o = _closest(moving, UT_LAT, UT_MAX_RANGE)
+  v_want = v_cruise if v_cruise else v_ego
 
   if v_ego < UT_MIN_SPEED:
     return {"active": False, "cap": None, "why": "below 70 km/h", "target": o}
   if o is None:
     return {"active": False, "cap": None, "why": "no vehicle in left lane", "target": None}
-  if o["v_abs"] + UT_SLIP >= v_ego:
+  if o["v_abs"] + UT_SLIP >= v_want:
     return {"active": False, "cap": None, "why": "left lane is not slower", "target": o}
 
   # Undertaking only applies when we are in a lane to its right. Being able to
@@ -98,8 +115,12 @@ def undertake(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
     return {"active": False, "cap": None,
             "why": "left lane is slower, but there is a lane to our right", "target": o}
 
-  cap = max(o["v_abs"] + UT_SLIP, UT_MIN_SPEED)
-  why = f"left lane {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m"
+  # Hold back UT_GAP_S behind it rather than just matching its speed: matching
+  # it plus a small slip still crept past on the inside, only slowly.
+  gap = UT_GAP_S * v_ego
+  adjust = min(max(UT_GAP_GAIN * (o["d"] - gap), -UT_BACKOFF), UT_SLIP)
+  cap = max(o["v_abs"] + adjust, UT_MIN_SPEED)
+  why = f"left lane {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m, keeping {gap:.0f} m"
   return {"active": True, "cap": cap, "why": why, "target": o}
 
 
