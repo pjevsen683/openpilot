@@ -17,6 +17,8 @@ DESIGN
     on its own: the cap goes through the ordinary cruise acceleration limits.
   * Only above 70 km/h, and the cap never goes below 70 km/h, so it cannot
     touch stopping, pulling away or stop-and-go traffic.
+  * It settles one second behind the left-lane car, so a car that stays out
+    there is followed rather than slowly passed on the inside.
   * The rule must hold for ENGAGE_S before the cap applies, so a radar track
     that flickers for a frame cannot make the car dip. Once the left lane
     clears, the last cap is kept for RELEASE_S before it is let go.
@@ -26,6 +28,12 @@ from openpilot.common.params import Params
 from openpilot.tavascan_web import geometry, shadow
 
 ENGAGE_S = 1.0
+# A car that is already almost beside us when the rule first fires is too late
+# to hold back for: dropping back behind it would mean braking hard on a
+# motorway. In a replay, one that appeared 3-7 m ahead while we closed at
+# 23 km/h would have asked for 24 km/h off. Below this time gap the rule may
+# keep a cap it already holds, but may not start one.
+MIN_START_GAP_S = 0.5
 RELEASE_S = 2.0
 # radarTracks arrives at 20 Hz; older than this and we act as if it is empty.
 RADAR_STALE_S = 0.5
@@ -60,8 +68,8 @@ class UndertakeGuard:
     self.cap = None
     self.why = ""
 
-  def update(self, sm, v_ego: float, dt: float) -> None:
-    """Called every planner tick with the planner's SubMaster."""
+  def update(self, sm, v_ego: float, v_cruise: float, dt: float) -> None:
+    """Called every planner tick with the planner's SubMaster and set speed."""
     self._read_param(dt)
     if not self.enabled:
       self._reset()
@@ -79,7 +87,10 @@ class UndertakeGuard:
     md = sm["modelV2"]
     lanes = shadow.lane_position(md.laneLineProbs, md.roadEdges)
     points = shadow.along_path(self._points, md.position.x, md.position.y)
-    rule = shadow.undertake(points, v_ego, lanes["rightmost"])
+    rule = shadow.undertake(points, v_ego, lanes["rightmost"], v_cruise)
+
+    if rule["active"] and self.cap is None and rule["target"]["d"] < MIN_START_GAP_S * v_ego:
+      rule = {**rule, "active": False}
 
     if rule["active"]:
       self._on_s += dt
