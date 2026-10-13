@@ -103,8 +103,10 @@ def _collect() -> None:
     osm_view["horizon"] = osm.map_horizon()
 
     lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
-    ut = shadow.undertake(points, v_ego, lanes["rightmost"])
-    left = shadow.left_lane_report(points, v_ego)
+    md = sm["modelV2"]
+    on_path = shadow.along_path(points, md.position.x, md.position.y)
+    ut = shadow.undertake(on_path, v_ego, lanes["rightmost"])
+    left = shadow.left_lane_report(on_path, v_ego)
     psd_snap = psd.snapshot()
 
     # carState.cruiseState.speed is the CAR's own cruise setting and reads zero

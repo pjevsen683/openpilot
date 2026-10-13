@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Shadow-mode evaluation of driving rules that are NOT wired into control.
+"""Shadow-mode evaluation of driving rules.
 
 Every rule here answers one question: "what would this have done, right now?"
-Nothing in this module is connected to the planner, the controller or CAN. It
-computes a would-be speed cap and a human-readable reason, and that is all.
+This module only computes a would-be speed cap and a human-readable reason. It
+never touches the planner, the controller or CAN itself.
 
 The point is to build confidence before anything is allowed to steer or brake.
-A rule earns its way into the control path by being watched here first.
+A rule earns its way into the control path by being watched here first. The
+undertaking rule has: the planner calls undertake() through
+sunnypilot/selfdrive/controls/lib/undertake_guard.py when the UndertakeGuard
+parameter is set, so a change here changes how the car drives.
 
 SIGN CONVENTION
   Everything in this module uses y POSITIVE TO THE RIGHT, matching modelV2's
@@ -25,6 +28,42 @@ UT_MAX_RANGE = 90.0
 UT_MIN_RANGE = 3.0
 UT_LAT = (-6.0, -2.0)                 # m, left lane (negative is left)
 UT_SLIP = 4 * CV.KPH_TO_MS            # tolerated speed excess
+# Left-lane objects slower than this are not traffic we would be undertaking:
+# a car waiting to turn left (which Danish law lets us pass on the right),
+# something standing still, or oncoming traffic on a two-lane road. In shadow
+# mode from 2026-10-07 to 2026-10-13 the rule fired twice on such objects, at 9
+# and 45 km/h, both on 80 km/h roads. Real left-lane traffic below this is a
+# queue, where passing on the right is allowed anyway.
+UT_MIN_TARGET_SPEED = 50 * CV.KPH_TO_MS
+
+def along_path(points: list, path_x, path_y) -> list:
+  """Points with their lateral offset measured from our planned path.
+
+  Radar y is in the car's frame. In a bend the lane ahead curves away from
+  that frame: at 80 m on a 500 m radius the offset is already 6 m, so a car in
+  our own lane can sit where the left lane would be on a straight road. The
+  rule fired on exactly that in replays of rural 80 km/h roads, with "left
+  lane" targets at y = -2.0 to -2.7 m that were the car ahead of us. Measuring
+  from the model's path at the object's distance puts the lanes back where they
+  belong.
+  """
+  if path_x is None or len(path_x) < 2:
+    return points
+  xs, ys = list(path_x), list(path_y)
+  out = []
+  for p in points:
+    d = p["d"]
+    if d <= xs[0]:
+      c = ys[0]
+    elif d >= xs[-1]:
+      c = ys[-1]
+    else:
+      i = next(k for k in range(1, len(xs)) if xs[k] >= d)
+      f = (d - xs[i - 1]) / (xs[i] - xs[i - 1]) if xs[i] > xs[i - 1] else 0.0
+      c = ys[i - 1] + f * (ys[i] - ys[i - 1])
+    out.append({**p, "y": round(p["y"] - c, 2), "y_car": p["y"]})
+  return out
+
 
 def _closest(points: list, lat: tuple, max_range: float):
   """Closest point whose lateral offset falls inside the given lane window."""
@@ -41,7 +80,8 @@ def _closest(points: list, lat: tuple, max_range: float):
 
 def undertake(points: list, v_ego: float, rightmost_lane: bool | None) -> dict:
   """Would we be undertaking a slower vehicle in the left lane?"""
-  o = _closest(points, UT_LAT, UT_MAX_RANGE)
+  moving = [p for p in points if p["v_abs"] >= UT_MIN_TARGET_SPEED]
+  o = _closest(moving, UT_LAT, UT_MAX_RANGE)
 
   if v_ego < UT_MIN_SPEED:
     return {"active": False, "cap": None, "why": "below 70 km/h", "target": o}

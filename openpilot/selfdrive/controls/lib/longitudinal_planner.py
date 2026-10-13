@@ -16,6 +16,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+from openpilot.sunnypilot.selfdrive.controls.lib.undertake_guard import UndertakeGuard
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -73,6 +74,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.allow_throttle = True
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
+    self.undertake_guard = UndertakeGuard()
     self.a_cruise = init_a
     self.output_a_target = init_a
     self.output_should_stop = False
@@ -123,6 +125,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     # Get new v_cruise and a_target from Smart Cruise Control and Speed Limit Assist
     v_cruise, self.output_a_target = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.output_a_target, v_cruise)
+
+    # Undertaking guard: only ever lowers the desired speed, never raises it.
+    # Off unless the UndertakeGuard parameter is set.
+    self.undertake_guard.update(sm, v_ego, self.dt)
+    v_cruise = self.undertake_guard.apply(v_cruise)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
