@@ -17,6 +17,8 @@ from typing import Literal
 # d-e2e, from modeldata.h
 TRAJECTORY_SIZE = 33
 SET_MODE_TIMEOUT = 15
+LEAD_DEPARTING_DIST = 30.0  # m
+LEAD_DEPARTING_DV = 0.5     # m/s, lead faster than us by at least this
 
 # Define the valid mode types
 ModeType = Literal['acc', 'blended']
@@ -171,6 +173,7 @@ class DynamicExperimentalController:
       smoothing_factor=0.5
     )
     self._has_lead_filtered = False
+    self._lead_departing = False
     self._has_slow_down = False
     self._has_slowness = False
     self._has_mpc_fcw = False
@@ -220,6 +223,10 @@ class DynamicExperimentalController:
     self._lead_filter.add_data(float(lead_one.present))
     lead_value = self._lead_filter.get_value() or 0.0
     self._has_lead_filtered = lead_value > WMACConstants.LEAD_PROB
+    # A lead that is well ahead and pulling away cannot be what the model is
+    # slowing down for (see _radar_mode).
+    self._lead_departing = bool(lead_one.present and lead_one.dRel > LEAD_DEPARTING_DIST and
+                                lead_one.vLead > car_state.vEgo + LEAD_DEPARTING_DV)
 
     # MPC FCW detection
     fcw_filtered_value = self._mpc_fcw_filter.get_value() or 0.0
@@ -342,8 +349,13 @@ class DynamicExperimentalController:
       self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
       return
 
-    # If lead detected and not in standstill: always use ACC
-    if self._has_lead_filtered and not (self._standstill_count > 3):
+    # If lead detected and not in standstill: use ACC -- unless the model is
+    # slowing down while the lead pulls away from us. On 2026-10-15 at 16:48 a
+    # car 60 m ahead drove on through a junction; ACC braked at -0.5 m/s2 for
+    # it while the model asked for the -1.25 m/s2 the red light needed, and DEC
+    # only went blended 15 m before the line, when the lead was gone.
+    if self._has_lead_filtered and not (self._standstill_count > 3) and \
+       not (self._has_slow_down and self._lead_departing):
       self._mode_manager.request_mode('acc', confidence=1.0)
       return
 
