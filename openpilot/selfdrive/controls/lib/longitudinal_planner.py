@@ -17,6 +17,7 @@ from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 from openpilot.sunnypilot.selfdrive.controls.lib.undertake_guard import UndertakeGuard
+from openpilot.sunnypilot.selfdrive.controls.lib.stop_offset import StopOffset
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -75,6 +76,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.undertake_guard = UndertakeGuard()
+    self.stop_offset = StopOffset()
     self.a_cruise = init_a
     self.output_a_target = init_a
     self.output_should_stop = False
@@ -165,6 +167,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
     if is_e2e:
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
+
+    # Stop a little short of where the model plans to stop; see stop_offset.py.
+    lead_one = sm['radarState'].leadOne
+    self.stop_offset.update(is_e2e and self.stop_latch.active, sm['modelV2'].position.x, sm['modelV2'].velocity.x,
+                            lead_one.present, lead_one.dRel, v_ego, output_a_target_e2e, self.dt)
+    if self.stop_offset.active:
+      candidates.append((self.stop_offset.a_target, LongitudinalPlanSource.e2e, self.stop_offset.should_stop))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
