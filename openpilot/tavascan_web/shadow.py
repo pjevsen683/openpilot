@@ -27,7 +27,7 @@ UT_MIN_SPEED = 70 * CV.KPH_TO_MS
 UT_MAX_RANGE = 90.0
 UT_MIN_RANGE = 3.0
 UT_LAT = (-6.0, -2.0)                 # m, left lane (negative is left)
-UT_SLIP = 4 * CV.KPH_TO_MS            # tolerated speed excess
+UT_SLIP = 4 * CV.KPH_TO_MS            # fastest we close in on it from far back
 # Left-lane objects slower than this are not traffic we would be undertaking:
 # a car waiting to turn left (which Danish law lets us pass on the right),
 # something standing still, or oncoming traffic on a two-lane road. In shadow
@@ -104,7 +104,10 @@ def undertake(points: list, v_ego: float, rightmost_lane: bool | None,
     return {"active": False, "cap": None, "why": "below 70 km/h", "target": o}
   if o is None:
     return {"active": False, "cap": None, "why": "no vehicle in left lane", "target": None}
-  if o["v_abs"] + UT_SLIP >= v_want:
+  # Any car slower than the speed we want counts. A tolerance here was a hole:
+  # with the set speed at 80 and the left car at 76-78, it was "not slower",
+  # nothing capped us, and we crept past it on the inside at 2-4 km/h.
+  if o["v_abs"] >= v_want:
     return {"active": False, "cap": None, "why": "left lane is not slower", "target": o}
 
   # Undertaking only applies when we are in a lane to its right. Being able to
@@ -121,6 +124,10 @@ def undertake(points: list, v_ego: float, rightmost_lane: bool | None,
   adjust = min(max(UT_GAP_GAIN * (o["d"] - gap), -UT_BACKOFF), UT_SLIP)
   cap = max(o["v_abs"] + adjust, UT_MIN_SPEED)
   why = f"left lane {o['v_abs'] * CV.MS_TO_KPH:.0f} km/h at {o['d']:.0f} m, keeping {gap:.0f} m"
+  # Far behind a car only a little slower, the cap is above the speed we want
+  # and would change nothing.
+  if cap >= v_want:
+    return {"active": False, "cap": None, "why": why + ", already holding back", "target": o}
   return {"active": True, "cap": cap, "why": why, "target": o}
 
 
