@@ -1,9 +1,9 @@
 """Stops STOP_OFFSET_M short of where the model plans to stop.
 
-At red lights the model has chosen stop points just past the line: about
-1 m on 2026-10-15 at 16:07, and the driver finds it is usually a little
-long. This adds a planner candidate that brakes for a point STOP_OFFSET_M
-before the model's own.
+At red lights the model chooses stop points past the line, every time
+according to the driver: about 1 m on 2026-10-15 at 16:07 in daylight,
+11 m on 2026-10-16 at 07:34 in the dark. This adds a planner candidate that
+brakes for a point STOP_OFFSET_M before the model's own.
 
 The model's stop point is where its planned speed reaches zero. It only
 reaches zero within the horizon in roughly the last 40 m, and there it is
@@ -25,7 +25,9 @@ The planner takes the lowest candidate, so this can only add braking. With
 a lead in front of the stop point the stop is for the lead, which the MPC
 handles.
 """
-STOP_OFFSET_M = 1.5
+# 1.5 m was too little for the 11 m case; 4 m leaves about 3 m short of the
+# line in the 1 m case.
+STOP_OFFSET_M = 4.0
 ZERO_SPEED = 0.3        # m/s, planned speed at or below this counts as stopped
 FREEZE_DIST = 3.0       # m
 FILTER_S = 0.5          # s
