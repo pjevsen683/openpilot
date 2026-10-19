@@ -35,6 +35,12 @@ ENGAGE_S = 1.0
 # keep a cap it already holds, but may not start one.
 MIN_START_GAP_S = 0.5
 RELEASE_S = 2.0
+# The raw cap jumps whenever the left-lane target changes (a new car appears
+# close, the next one is a little slower). Behind a stream of cars at
+# 99-105 km/h on 2026-10-19 that made 58 accel/brake reversals in 100 s;
+# a 2 s low-pass brings it to 24 and the hardest braking from -0.96 to
+# -0.57 m/s2. The 1 s gap leaves room for the lag.
+CAP_FILTER_S = 2.0
 # radarTracks arrives at 20 Hz; older than this and we act as if it is empty.
 RADAR_STALE_S = 0.5
 PARAM_PERIOD_S = 1.0
@@ -51,6 +57,7 @@ class UndertakeGuard:
     self._on_s = 0.0
     self._off_s = 0.0
     self.cap: float | None = None   # m/s, or None when not capping
+    self._raw_cap: float | None = None
     self.why = ""
 
   def _read_param(self, dt: float) -> None:
@@ -66,6 +73,7 @@ class UndertakeGuard:
     self._points = []
     self._on_s = self._off_s = 0.0
     self.cap = None
+    self._raw_cap = None
     self.why = ""
 
   def update(self, sm, v_ego: float, v_cruise: float, dt: float) -> None:
@@ -96,7 +104,7 @@ class UndertakeGuard:
       self._on_s += dt
       self._off_s = 0.0
       if self._on_s >= ENGAGE_S:
-        self.cap = rule["cap"]
+        self._raw_cap = rule["cap"]
         self.why = rule["why"]
     else:
       self._on_s = 0.0
@@ -104,7 +112,14 @@ class UndertakeGuard:
         self._off_s += dt
         if self._off_s >= RELEASE_S:
           self.cap = None
+          self._raw_cap = None
           self.why = ""
+
+    if self._raw_cap is not None:
+      if self.cap is None:
+        self.cap = self._raw_cap
+      else:
+        self.cap += (self._raw_cap - self.cap) * min(1.0, dt / CAP_FILTER_S)
 
   def apply(self, v_cruise: float) -> float:
     """Lowers the desired speed to the cap. Never raises it."""
