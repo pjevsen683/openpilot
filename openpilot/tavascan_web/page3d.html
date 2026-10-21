@@ -142,6 +142,7 @@ window.addEventListener("resize", resize); resize();
 // ---- materials and textures ---------------------------------------------------
 const M = {
   asphalt: new THREE.MeshStandardMaterial({ color: "#2b2f35", roughness: 0.95 }),
+  ourLane: new THREE.MeshBasicMaterial({ color: "#5b8fd6", transparent: true, opacity: 0.10, depthWrite: false }),
   asphaltOpp: new THREE.MeshStandardMaterial({ color: "#23262b", roughness: 0.95 }),
   paint: new THREE.MeshBasicMaterial({ color: "#d9dde3" }),
   paintDim: new THREE.MeshBasicMaterial({ color: "#8d939b" }),
@@ -356,6 +357,10 @@ function buildRoad(mm, lanePos, modelReach, modelHeading) {
   const s0 = Math.max(tr.s0, -40), s1 = tr.s1;
   const ours = band(tr, s0, s1, leftEdge, rightEdge, M.asphalt, 0.0);
   if (ours) grp.add(ours);
+  // our own lane, faintly, as far as we can trust which lane it is
+  const mine = band(tr, Math.max(s0, -8), Math.min(s1, 60), s => leftEdge(s) + idx * LANE_W + 0.25,
+                    s => leftEdge(s) + (idx + 1) * LANE_W - 0.25, M.ourLane, 0.012);
+  if (mine) grp.add(mine);
   if (twoWay) {
     const opp = band(tr, s0, s1, s => -oppLanes * LANE_W, () => 0, M.asphaltOpp, 0.0);
     if (opp) grp.add(opp);
@@ -582,6 +587,9 @@ function makeOther() {
 function updateOthers(d) {
   const seen = new Set();
   const target = d.undertake && d.undertake.active && d.undertake.target ? d.undertake.target.id : null;
+  // the car we follow: nearest ahead in our own lane
+  let lead = null;
+  for (const p of d.points || []) if (p.d > 0 && p.d < 120 && Math.abs(p.y) < 1.6 && (!lead || p.d < lead.d)) lead = p;
   for (const p of d.points || []) {
     if (p.d < -5 || p.d > 170 || Math.abs(p.y) > 14) continue;
     seen.add(p.id);
@@ -589,7 +597,10 @@ function updateOthers(d) {
     if (!o) { o = { obj: makeOther(), fresh: true }; others.set(p.id, o); }
     o.target = P(p.d + CAR_L / 2, p.y);
     if (o.fresh) { o.obj.position.copy(o.target); o.fresh = false; }
-    o.obj.getObjectByName("ring").material.opacity = p.id === target ? 0.9 : 0;
+    const ring = o.obj.getObjectByName("ring").material;
+    if (p.id === target) { ring.color.set("#ff9c3a"); ring.opacity = 0.9; }
+    else if (lead && p.id === lead.id) { ring.color.set("#46b3ff"); ring.opacity = 0.7; }
+    else ring.opacity = 0;
   }
   for (const [id, o] of others) if (!seen.has(id)) { scene.remove(o.obj); others.delete(id); }
 }
@@ -618,7 +629,8 @@ function hud(d) {
   const map = d.map || null, mm = map && map.match;
   const lim = $("lim");
   if (mm && mm.maxspeed) { lim.textContent = mm.maxspeed; lim.className = "limit"; } else lim.className = "limit off";
-  if (!map) { $("rname").textContent = "no map"; $("rinfo").textContent = "map file not installed"; }
+  if (d.parked) { $("rname").textContent = "parked"; $("rinfo").textContent = "the road shows once we drive"; }
+  else if (!map) { $("rname").textContent = "no map"; $("rinfo").textContent = "map file not installed"; }
   else if (!map.fix) { $("rname").textContent = "–"; $("rinfo").textContent = "waiting for GPS"; }
   else if (!mm) { $("rname").textContent = "–"; $("rinfo").textContent = "no road matched"; }
   else {
