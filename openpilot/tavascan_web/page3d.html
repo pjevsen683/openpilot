@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Tavascan 3D</title>
+<style>
+  /* For a passenger, not the driver. One phone screen, no scrolling. */
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0c0e11; color: #eee;
+               font: 13px/1.25 -apple-system, system-ui, sans-serif; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100dvh; display: block; }
+  .hud { position: fixed; left: 0; right: 0; pointer-events: none;
+         padding: calc(env(safe-area-inset-top) + 8px) 10px 0 10px; }
+  .row { display: flex; gap: 8px; align-items: stretch; }
+  .box { background: #0c0e11c0; backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+         border-radius: 10px; padding: 5px 9px; }
+  .big b { display: block; font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1; }
+  .big s { display: block; text-decoration: none; font-size: 9px; color: #8a8f98;
+           text-transform: uppercase; letter-spacing: .08em; margin-top: 2px; }
+  .limit { width: 46px; height: 46px; border-radius: 50%; background: #fff; border: 6px solid #d8232a;
+           color: #111; font-weight: 800; font-size: 17px; display: flex; align-items: center; justify-content: center;
+           align-self: center; }
+  .limit.off { visibility: hidden; }
+  .road { flex: 1; min-width: 0; }
+  .road i { display: block; font-style: normal; font-size: 15px; font-weight: 600;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .road u { display: block; text-decoration: none; font-size: 11px; color: #9aa1ab;
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .eng { width: 10px; border-radius: 5px; background: #333; }
+  .eng.on { background: #3ddc84; }
+  .events { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 5px; }
+  .ev { font-size: 11px; padding: 3px 7px; border-radius: 12px; background: #0c0e11c0; color: #cfd4db; }
+  .ev b { font-weight: 700; margin-right: 4px; }
+  .ev.hot { background: #6a2a10d0; color: #fff; }
+  .bottom { position: fixed; left: 0; right: 0; bottom: 0; pointer-events: none;
+            padding: 0 10px calc(env(safe-area-inset-bottom) + 8px) 10px; display: flex; gap: 6px; align-items: end; }
+  .chip { background: #0c0e11c0; border-radius: 10px; padding: 4px 8px; border-left: 3px solid #333; font-size: 11px; color: #cfd4db; }
+  .chip.on { background: #4a2a12d0; border-left-color: #ff9c3a; color: #fff; }
+  .chip u { display: block; text-decoration: none; font-size: 8px; color: #8a8f98; text-transform: uppercase; letter-spacing: .07em; }
+  .spacer { flex: 1; }
+  .btn { pointer-events: auto; background: #20242bd0; color: #cfd4db; border: 0; border-radius: 8px;
+         padding: 6px 9px; font-size: 11px; text-decoration: none; }
+  .note { font-size: 9px; color: #6c727b; }
+</style>
+<script type="importmap">{ "imports": { "three": "/static/three/three.module.min.js" } }</script>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="hud">
+  <div class="row">
+    <div class="box big"><b id="v">–</b><s>km/h</s></div>
+    <div class="box big"><b id="vs">–</b><s>set</s></div>
+    <div class="limit off" id="lim">–</div>
+    <div class="box road"><i id="rname">–</i><u id="rinfo">waiting for the car…</u></div>
+    <div class="eng" id="eng"></div>
+  </div>
+  <div class="events" id="evs"></div>
+</div>
+
+<div class="bottom">
+  <div class="chip" id="cg"><u>undertaking</u>–</div>
+  <div class="chip" id="cl"><u>left lane</u>–</div>
+  <div class="spacer"></div>
+  <span class="note" id="note"></span>
+  <button class="btn" id="cam">camera</button>
+  <a class="btn" href="/">2D</a>
+</div>
+
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "/static/three/loaders/GLTFLoader.js";
+
+// ---- frames ------------------------------------------------------------------
+// Data arrives in the car frame: x metres AHEAD, y metres to the RIGHT, origin
+// at the front bumper (radar and model) or at the GPS fix (map). three.js is
+// x right, y up, z towards the camera, so (x, y) maps to (y, h, -x).
+const P = (x, y, h = 0) => new THREE.Vector3(y, h, -x);
+const DEBUG = new URLSearchParams(location.search).has("debug");
+const LANE_W = 3.4;
+const CAR_L = 4.6, CAR_W = 1.85;
+
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "low-power" });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+const scene = new THREE.Scene();
+const SKY = new THREE.Color("#0c0e11");
+// A faint band of light at the horizon, so far road and sky separate.
+scene.background = canvasTexEarly(2, 256, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, "#07080a"); gr.addColorStop(0.47, "#141a24"); gr.addColorStop(0.53, "#1b2230"); gr.addColorStop(1, "#0c0e11");
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+});
+function canvasTexEarly(w, h, paint) {
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h; paint(cv.getContext("2d"), w, h);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+scene.fog = new THREE.Fog(SKY, 90, 430);
+const camera = new THREE.PerspectiveCamera(52, 1, 0.5, 900);
+scene.add(new THREE.HemisphereLight("#c9d8ff", "#1a1c20", 1.1));
+const sun = new THREE.DirectionalLight("#ffffff", 1.6);
+sun.position.set(-40, 80, 30);
+scene.add(sun);
+
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000),
+                              new THREE.MeshStandardMaterial({ color: "#13161a", roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.position.y = -0.02;
+scene.add(ground);
+
+const CAMS = [
+  { name: "chase", pos: P(-17, 0, 7.5), look: P(42, 0, 0) },
+  { name: "high", pos: P(-26, 0, 20), look: P(55, 0, 0) },
+  { name: "top", pos: P(20, 0, 110), look: P(45, 0, 0), up: [0, 0, -1] },
+];
+let camIdx = 0;
+try { camIdx = Math.min(CAMS.length - 1, Math.max(0, +localStorage.getItem("cam3d") || 0)); } catch (e) {}
+function setCam() {
+  const c = CAMS[camIdx];
+  camera.position.copy(c.pos);
+  camera.up.set(...(c.up || [0, 1, 0]));
+  camera.lookAt(c.look);
+  document.getElementById("cam").textContent = c.name;
+}
+document.getElementById("cam").onclick = () => {
+  camIdx = (camIdx + 1) % CAMS.length; setCam();
+  try { localStorage.setItem("cam3d", camIdx); } catch (e) {}
+};
+setCam();
+
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize); resize();
+
+// ---- materials and textures ---------------------------------------------------
+const M = {
+  asphalt: new THREE.MeshStandardMaterial({ color: "#2b2f35", roughness: 0.95 }),
+  asphaltOpp: new THREE.MeshStandardMaterial({ color: "#23262b", roughness: 0.95 }),
+  paint: new THREE.MeshBasicMaterial({ color: "#d9dde3" }),
+  paintDim: new THREE.MeshBasicMaterial({ color: "#8d939b" }),
+  model: new THREE.MeshBasicMaterial({ color: "#eef3f8" }),
+  edge: new THREE.MeshBasicMaterial({ color: "#5a4632" }),
+  pole: new THREE.MeshStandardMaterial({ color: "#59606a", roughness: 0.6, metalness: 0.4 }),
+  head: new THREE.MeshStandardMaterial({ color: "#16181b", roughness: 0.5 }),
+  bump: new THREE.MeshBasicMaterial({ color: "#d8c23a" }),
+};
+
+function canvasTex(w, h, paint) {
+  const cv = document.createElement("canvas"); cv.width = w; cv.height = h;
+  paint(cv.getContext("2d"), w, h);
+  const t = new THREE.CanvasTexture(cv); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+const texCache = new Map();
+function cached(key, make) { if (!texCache.has(key)) texCache.set(key, make()); return texCache.get(key); }
+
+// Road arrows, drawn as Danish road markings: white, long, seen from above.
+function arrowTex(kinds) {
+  return cached("arrow:" + kinds.join(","), () => canvasTex(128, 320, (g, w, h) => {
+    g.fillStyle = "#e6e9ee"; g.strokeStyle = "#e6e9ee"; g.lineCap = "round"; g.lineJoin = "round";
+    const cx = w / 2, base = h - 10, top = 70;
+    const shaft = () => { g.lineWidth = 16; g.beginPath(); g.moveTo(cx, base); g.lineTo(cx, top + 70); g.stroke(); };
+    const head = (x, y, ang) => {
+      g.save(); g.translate(x, y); g.rotate(ang); g.beginPath();
+      g.moveTo(0, -38); g.lineTo(26, 6); g.lineTo(-26, 6); g.closePath(); g.fill(); g.restore();
+    };
+    shaft();
+    for (const k of kinds) {
+      if (k === "through" || k === "none" || k === "") { g.lineWidth = 16; g.beginPath(); g.moveTo(cx, top + 70); g.lineTo(cx, top + 30); g.stroke(); head(cx, top + 30, 0); }
+      const side = k.includes("left") ? -1 : k.includes("right") ? 1 : 0;
+      if (side && !k.startsWith("merge")) {
+        const sharp = k.startsWith("sharp"), slight = k.startsWith("slight");
+        const ex = cx + side * (slight ? 30 : 44), ey = top + (slight ? 40 : sharp ? 110 : 70);
+        g.lineWidth = 16; g.beginPath(); g.moveTo(cx, top + 120); g.quadraticCurveTo(cx, ey, ex, ey - (slight ? 20 : 0)); g.stroke();
+        head(ex + side * 6, ey - (slight ? 26 : 0), side * (slight ? Math.PI / 4 : Math.PI / 2));
+      }
+      if (k === "reverse") { g.lineWidth = 14; g.beginPath(); g.arc(cx - 22, top + 90, 22, 0, Math.PI, true); g.stroke(); head(cx - 44, top + 100, Math.PI); }
+    }
+  }));
+}
+
+function signTex(kind, text) {
+  return cached("sign:" + kind + ":" + (text || ""), () => canvasTex(128, 128, (g, w, h) => {
+    const c = w / 2;
+    if (kind === "limit") {
+      g.fillStyle = "#fff"; g.beginPath(); g.arc(c, c, 60, 0, 7); g.fill();
+      g.lineWidth = 14; g.strokeStyle = "#d8232a"; g.beginPath(); g.arc(c, c, 52, 0, 7); g.stroke();
+      g.fillStyle = "#111"; g.font = "bold 50px system-ui"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, c, c + 3);
+    } else if (kind === "give_way") {
+      g.fillStyle = "#d8232a"; g.beginPath(); g.moveTo(8, 12); g.lineTo(120, 12); g.lineTo(64, 118); g.closePath(); g.fill();
+      g.fillStyle = "#fff"; g.beginPath(); g.moveTo(32, 26); g.lineTo(96, 26); g.lineTo(64, 88); g.closePath(); g.fill();
+    } else if (kind === "stop") {
+      g.fillStyle = "#d8232a"; g.beginPath();
+      for (let i = 0; i < 8; i++) { const a = Math.PI / 8 + i * Math.PI / 4; g.lineTo(c + 60 * Math.cos(a), c + 60 * Math.sin(a)); }
+      g.closePath(); g.fill(); g.fillStyle = "#fff"; g.font = "bold 34px system-ui"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText("STOP", c, c + 2);
+    } else if (kind === "roundabout") {
+      g.fillStyle = "#1d5fbf"; g.beginPath(); g.arc(c, c, 60, 0, 7); g.fill();
+      g.strokeStyle = "#fff"; g.lineWidth = 10;
+      for (let i = 0; i < 3; i++) { const a0 = i * 2.1; g.beginPath(); g.arc(c, c, 32, a0, a0 + 1.4); g.stroke(); }
+    } else if (kind === "camera") {
+      g.fillStyle = "#1d5fbf"; g.fillRect(8, 8, 112, 112); g.fillStyle = "#fff"; g.fillRect(30, 46, 68, 40); g.beginPath(); g.arc(64, 66, 13, 0, 7); g.fillStyle = "#1d5fbf"; g.fill();
+    } else if (kind === "rail") {
+      g.strokeStyle = "#d8232a"; g.lineWidth = 18; g.beginPath(); g.moveTo(16, 16); g.lineTo(112, 112); g.moveTo(112, 16); g.lineTo(16, 112); g.stroke();
+    } else if (kind === "exit") {
+      // Danish motorway exit: blue sign, white arrow up and to the right, exit number
+      g.fillStyle = "#1d5fbf"; g.fillRect(4, 14, 120, 100); g.strokeStyle = "#fff"; g.lineWidth = 4; g.strokeRect(9, 19, 110, 90);
+      g.lineWidth = 12; g.lineCap = "round"; g.beginPath(); g.moveTo(44, 100); g.lineTo(44, 66); g.lineTo(78, 38); g.stroke();
+      g.fillStyle = "#fff"; g.beginPath(); g.moveTo(92, 26); g.lineTo(66, 34); g.lineTo(84, 52); g.closePath(); g.fill();
+      if (text) { g.font = "bold 26px system-ui"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, 92, 92); }
+    } else if (kind === "bump") {
+      g.fillStyle = "#f2c200"; g.beginPath(); g.moveTo(8, 112); g.lineTo(64, 10); g.lineTo(120, 112); g.closePath(); g.fill();
+      g.fillStyle = "#111"; g.beginPath(); g.moveTo(34, 92); g.quadraticCurveTo(64, 50, 94, 92); g.fill();
+    }
+  }));
+}
+
+// ---- small geometry helpers ----------------------------------------------------
+// A polyline in the car frame with a distance s per point, sampled at any s.
+function track(pts) {
+  const n = pts.length;
+  const at = s => {
+    let i = 1;
+    while (i < n - 1 && pts[i][4] < s) i++;
+    const a = pts[i - 1], b = pts[i];
+    const f = b[4] === a[4] ? 0 : Math.min(1, Math.max(0, (s - a[4]) / (b[4] - a[4])));
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
+    return { x: a[0] + f * dx, y: a[1] + f * dy, fx: dx / L, fy: dy / L, lanes: f < 0.5 ? a[2] : b[2] };
+  };
+  return { at, s0: pts[0][4], s1: pts[n - 1][4] };
+}
+
+// A flat quad strip along a track between lateral offsets l(s) and r(s), metres
+// right of the track (negative is left).
+function band(tr, s0, s1, l, r, mat, h = 0.01, step = 2) {
+  const pos = [], idx = [];
+  let k = 0;
+  for (let s = s0; s <= s1 + 1e-6; s += step) {
+    const p = tr.at(Math.min(s, s1)), nx = -p.fy, ny = p.fx;   // right normal in (x, y)
+    const a = P(p.x + nx * l(s), p.y + ny * l(s), h), b = P(p.x + nx * r(s), p.y + ny * r(s), h);
+    pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    if (k) idx.push(2 * k - 2, 2 * k - 1, 2 * k, 2 * k - 1, 2 * k + 1, 2 * k);
+    k++;
+  }
+  if (k < 2) return null;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  return new THREE.Mesh(g, mat);
+}
+
+function dashes(tr, s0, s1, off, mat, dash = 3, gap = 6, w = 0.14) {
+  const grp = new THREE.Group();
+  for (let s = s0 - ((s0 % (dash + gap)) + dash + gap) % (dash + gap); s < s1; s += dash + gap) {
+    const a = Math.max(s, s0), b = Math.min(s + dash, s1);
+    if (b - a < 0.5) continue;
+    const m = band(tr, a, b, () => off(a) - w / 2, () => off(a) + w / 2, mat, 0.02, Math.max(0.5, b - a));
+    if (m) grp.add(m);
+  }
+  return grp;
+}
+
+function plane(w, l, tex, opts = {}) {
+  const mat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, ...opts });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, l), mat);
+  return m;
+}
+
+// Places an object flat on the road at track distance s, offset metres right.
+function onRoad(obj, tr, s, offset, h = 0.03) {
+  const p = tr.at(s), nx = -p.fy, ny = p.fx;
+  obj.position.copy(P(p.x + nx * offset, p.y + ny * offset, h));
+  obj.rotation.set(-Math.PI / 2, 0, Math.atan2(-p.fy, p.fx), "YXZ");
+  obj.rotation.order = "YXZ";
+  obj.rotation.y = Math.atan2(-p.fy, p.fx);
+  obj.rotation.x = -Math.PI / 2;
+  obj.rotation.z = 0;
+  return obj;
+}
+
+function signPost(tex, tr, s, offset, height = 2.4, size = 1.1) {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, height, 8), M.pole);
+  pole.position.y = height / 2; g.add(pole);
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(size, size),
+                              new THREE.MeshBasicMaterial({ map: tex, transparent: true, side: THREE.DoubleSide }));
+  face.position.y = height + size / 2 - 0.1; g.add(face);
+  const p = tr.at(s), nx = -p.fy, ny = p.fx;
+  g.position.copy(P(p.x + nx * offset, p.y + ny * offset));
+  g.rotation.y = Math.atan2(-p.fy, p.fx);   // face back towards us
+  return g;
+}
+
+function trafficLight(tr, s, offset) {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 3.4, 10), M.pole);
+  pole.position.y = 1.7; g.add(pole);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.42, 1.15, 0.28), M.head);
+  head.position.y = 3.6; g.add(head);
+  // The lamps' state is not known, so all three glow faintly.
+  [["#ff3b30", 3.95], ["#ffb000", 3.6], ["#30d158", 3.25]].forEach(([c, y]) => {
+    const l = new THREE.Mesh(new THREE.CircleGeometry(0.13, 18), new THREE.MeshBasicMaterial({ color: c, transparent: true, opacity: 0.45 }));
+    l.position.set(0, y, 0.15); g.add(l);
+  });
+  const p = tr.at(s), nx = -p.fy, ny = p.fx;
+  g.position.copy(P(p.x + nx * offset, p.y + ny * offset));
+  g.rotation.y = Math.atan2(-p.fy, p.fx);
+  return g;
+}
+
+// ---- the road from the map -------------------------------------------------------
+let roadGroup = null;
+// Road and lane lines are rebuilt each time data arrives (2.5 Hz). In between,
+// the world flows past at our own speed so markings do not jump 10 m at a time.
+const flow = new THREE.Group();
+scene.add(flow);
+let flowSpeed = 0, flowFrom = performance.now();
+
+function dispose(o) {
+  o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && !Object.values(M).includes(c.material)) c.material.dispose(); });
+}
+
+function buildRoad(mm, lanePos, modelReach, modelHeading) {
+  if (roadGroup) { flow.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
+  if (!mm || !mm.path || !mm.path.pts || mm.path.pts.length < 2) return;
+  const pts = mm.path.pts, turns = mm.path.turns || [];
+  const tr = track(pts);
+  const grp = new THREE.Group();
+
+  // Our carriageway: lanes in our direction, from the map; one lane when unknown.
+  const ourLanes = s => Math.max(1, tr.at(s).lanes || mm.lanes || 1);
+  const L0 = ourLanes(0);
+  const twoWay = !mm.oneway;
+  const oppLanes = twoWay ? Math.max(1, (mm.lanes_total || 2 * L0) - L0) : 0;
+  // On a two-way road OSM draws the centre line; our lanes are to its right.
+  // On a one-way road it is the middle of the carriageway.
+  const leftEdge = s => twoWay ? 0 : -ourLanes(s) * LANE_W / 2;
+  const rightEdge = s => leftEdge(s) + ourLanes(s) * LANE_W;
+
+  // Which lane are we in: the model says rightmost or leftmost; otherwise the
+  // middle one. Shift the whole road so that lane is under us.
+  let idx = (L0 - 1) / 2;
+  if (lanePos && L0 > 1) { if (lanePos.rightmost) idx = L0 - 1; else if (lanePos.leftmost) idx = 0; else idx = Math.floor((L0 - 1) / 2); }
+  const p0 = tr.at(0);
+  const laneCentre = leftEdge(0) + (idx + 0.5) * LANE_W;
+  const cx = p0.x + -p0.fy * laneCentre, cy = p0.y + p0.fx * laneCentre;
+  grp.position.copy(P(-cx, -cy).add(new THREE.Vector3(0, 0, 0)));
+  grp.position.y = 0;
+
+  const s0 = Math.max(tr.s0, -40), s1 = tr.s1;
+  const ours = band(tr, s0, s1, leftEdge, rightEdge, M.asphalt, 0.0);
+  if (ours) grp.add(ours);
+  if (twoWay) {
+    const opp = band(tr, s0, s1, s => -oppLanes * LANE_W, () => 0, M.asphaltOpp, 0.0);
+    if (opp) grp.add(opp);
+  }
+
+  // Markings. Close in, the model's own lines are drawn instead (they are
+  // where the paint really is); the map's take over beyond them.
+  const mk = Math.max(s0, modelReach);
+  const edgeL = band(tr, mk, s1, s => leftEdge(s) - 0.07, s => leftEdge(s) + 0.07, twoWay ? M.paintDim : M.paint, 0.02);
+  const edgeR = band(tr, mk, s1, s => rightEdge(s) - 0.07, s => rightEdge(s) + 0.07, M.paint, 0.02);
+  if (edgeL && !twoWay) grp.add(edgeL);
+  if (edgeR) grp.add(edgeR);
+  if (twoWay) grp.add(dashes(tr, mk, s1, () => 0, M.paint, 3, 9));
+  for (let k = 1; k < 8; k++) {
+    const segs = [];
+    let a = null;
+    for (let s = mk; s <= s1; s += 3) {
+      const ok = ourLanes(s) > k;
+      if (ok && a === null) a = s;
+      if ((!ok || s + 3 > s1) && a !== null) { segs.push([a, s]); a = null; }
+    }
+    for (const [a1, b1] of segs) grp.add(dashes(tr, a1, b1, s => leftEdge(s) + k * LANE_W, M.paint, 3, 6));
+  }
+
+  // Turn arrows, a pair per run of turn lanes: near its end (the junction) and 30 m before.
+  for (let i = 0; i < pts.length; i++) {
+    const t = pts[i][3];
+    if (t < 0 || (i + 1 < pts.length && pts[i + 1][3] === t)) continue;   // last point of a run
+    const kinds = turns[t].split("|");
+    const sEnd = pts[i][4];
+    let sStart = sEnd; for (let j = i; j >= 0 && pts[j][3] === t; j--) sStart = pts[j][4];
+    for (const back of [12, 42]) {
+      const s = sEnd - back;
+      if (s < Math.max(sStart, 4)) continue;
+      const L = ourLanes(s);
+      if (kinds.length !== L) continue;
+      kinds.forEach((k, li) => {
+        const parts = k.split(";").map(x => x.trim()).filter(Boolean);
+        const tex = arrowTex(parts.length ? parts : ["through"]);
+        grp.add(onRoad(plane(1.7, 5.2, tex), tr, s, leftEdge(s) + (li + 0.5) * LANE_W, 0.03));
+      });
+    }
+  }
+
+  // Things on the road ahead.
+  const ev = (mm.ahead && mm.ahead.events) || [];
+  const signOff = s => rightEdge(s) + 0.9;
+  for (const e of ev) {
+    const s = e.at_m;
+    if (s < 1 || s > s1) continue;
+    if (e.kind === "traffic_signals") {
+      // Danish junctions put a signal at the stop line on our right, and often
+      // one over the lanes; draw both so it reads from the chase camera.
+      grp.add(trafficLight(tr, s, signOff(s)));
+      grp.add(trafficLight(tr, s, leftEdge(s) - 0.9));
+      const line = band(tr, s - 0.3, s + 0.3, leftEdge, rightEdge, M.paint, 0.025, 0.6);
+      if (line) grp.add(line);
+    } else if (e.kind === "crossing") {
+      for (let y = leftEdge(s) + 0.3; y < rightEdge(s) - 0.2; y += 1.0) {
+        const z = band(tr, s - 1.5, s + 1.5, () => y, () => y + 0.5, M.paint, 0.025, 3);
+        if (z) grp.add(z);
+      }
+    } else if (e.kind === "give_way") {
+      grp.add(signPost(signTex("give_way"), tr, s, signOff(s)));
+      for (let y = leftEdge(s) + 0.3; y < rightEdge(s) - 0.3; y += 0.9) {
+        const tri = new THREE.Mesh(new THREE.CircleGeometry(0.36, 3), M.paint);
+        onRoad(tri, tr, s - 0.6, y + 0.3, 0.025); tri.rotation.z = Math.PI / 2; grp.add(tri);
+      }
+    } else if (e.kind === "stop") {
+      grp.add(signPost(signTex("stop"), tr, s, signOff(s)));
+      const line = band(tr, s - 0.25, s + 0.25, leftEdge, rightEdge, M.paint, 0.025, 0.5);
+      if (line) grp.add(line);
+    } else if (e.kind === "roundabout") {
+      grp.add(signPost(signTex("roundabout"), tr, Math.max(2, s - 25), signOff(s)));
+    } else if (e.kind === "traffic_calming") {
+      // a bump spans the whole road, both directions
+      const b = band(tr, s - 1.2, s + 1.2, s => twoWay ? -oppLanes * LANE_W : leftEdge(s), rightEdge, M.bump, 0.03, 1.2);
+      if (b) grp.add(b);
+    } else if (e.kind === "motorway_junction") {
+      let t = {}; try { t = JSON.parse(e.tags || "{}"); } catch (err) {}
+      grp.add(signPost(signTex("exit", t.ref || ""), tr, Math.max(2, s - 30), signOff(s), 2.6, 1.6));
+    } else if (e.kind === "speed_camera") {
+      grp.add(signPost(signTex("camera"), tr, s, signOff(s)));
+    } else if (e.kind === "level_crossing") {
+      grp.add(signPost(signTex("rail"), tr, Math.max(2, s - 20), signOff(s)));
+    } else if (e.kind === "maxspeed" && e.to) {
+      grp.add(signPost(signTex("limit", String(e.to)), tr, s, signOff(s)));
+    }
+  }
+  // The map's direction comes from the GPS bearing, which is a few degrees
+  // off at times. Where the model sees our lane, turn the map onto it.
+  const outer = new THREE.Group();
+  outer.add(grp);
+  if (modelHeading !== null) {
+    const pm = tr.at(30), mapHeading = Math.atan2(pm.fy, pm.fx);
+    let delta = modelHeading - mapHeading;
+    delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+    if (Math.abs(delta) < 8 * Math.PI / 180) outer.rotation.y = -delta;
+  }
+  roadGroup = outer;
+  flow.add(outer);
+}
+
+// ---- the model's lane lines, close in -------------------------------------------
+let modelGroup = null;
+function buildModel(sc) {
+  if (modelGroup) { flow.remove(modelGroup); dispose(modelGroup); modelGroup = null; }
+  const grp = new THREE.Group();
+  let reach = 0;
+  const strip = (pts, w, mat) => {
+    if (!pts || pts.length < 2) return;
+    const tp = pts.map(([x, y]) => [x, y, 0, -1, x]);
+    const m = band(track(tp), Math.max(0, tp[0][4]), tp[tp.length - 1][4], () => -w / 2, () => w / 2, mat, 0.035, 2);
+    if (m) grp.add(m);
+  };
+  (sc.lane_lines || []).forEach(l => {
+    if (!l || !l.confident) return;
+    strip(l.points, 0.13, M.model);
+    reach = Math.max(reach, l.points[l.points.length - 1][0]);
+  });
+  (sc.road_edges || []).forEach(e => e && strip(e.points, 0.12, M.edge));
+  modelGroup = grp; flow.add(grp);
+  // Our lane's direction 20-50 m ahead, from the nearest confident line.
+  let heading = null, best = 1e9;
+  for (const l of sc.lane_lines || []) {
+    if (!l || !l.confident) continue;
+    const near = l.points.find(p => p[0] >= 2), a = l.points.find(p => p[0] >= 20), b = l.points.find(p => p[0] >= 50);
+    if (!near || !a || !b || Math.abs(near[1]) > 3) continue;
+    if (Math.abs(near[1]) < best) { best = Math.abs(near[1]); heading = Math.atan2(b[1] - a[1], b[0] - a[0]); }
+  }
+  return { reach: Math.min(reach, 90), heading };
+}
+
+// ---- vehicles ----------------------------------------------------------------------
+const loader = new GLTFLoader();
+// Per-model fixes, found by looking at each one: which way is forward, how long it is.
+const MODELS = {
+  // Both generated models face +z; our forward is -z. The ego texture came out
+  // darker than its reference image, so it is lifted.
+  // ego.glb is built from a photo of the car itself (dark graphite). Its
+  // texture drifted to teal, so blue-green is pulled back to grey while the
+  // red rear lights keep their colour.
+  ego: { url: "/assets/ego.glb", length: 4.64, yaw: 180, tint: 1.25, degrey: 0.15 },
+  car: { url: "/assets/car.glb", length: 4.4, yaw: 180, tint: 1.3 },
+};
+const proto = {};
+function loadModel(key) {
+  const cfg = MODELS[key];
+  return new Promise(res => loader.load(cfg.url, gltf => {
+    const root = gltf.scene;
+    root.rotation.y = cfg.yaw * Math.PI / 180;
+    if (cfg.tint) root.traverse(o => { if (o.isMesh && o.material && o.material.color) o.material.color.multiplyScalar(cfg.tint); });
+    if (cfg.degrey !== undefined) root.traverse(o => {
+      if (!o.isMesh || !o.material) return;
+      o.material.onBeforeCompile = sh => {
+        sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", `#include <map_fragment>
+          { float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+            float cool = smoothstep(0.0, 0.08, max(diffuseColor.g, diffuseColor.b) - diffuseColor.r);
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(lum) * vec3(0.97, 0.99, 1.04), cool * (1.0 - ${cfg.degrey.toFixed(2)})); }`);
+      };
+      o.material.needsUpdate = true;
+    });
+    const box = new THREE.Box3().setFromObject(root), size = new THREE.Vector3(), c = new THREE.Vector3();
+    box.getSize(size); box.getCenter(c);
+    const k = cfg.length / Math.max(size.x, size.z);
+    const wrap = new THREE.Group();
+    root.position.sub(c); root.position.y += size.y / 2;
+    wrap.add(root); wrap.scale.setScalar(k);
+    res(wrap);
+  }, undefined, () => res(null)));
+}
+function boxCar(color) {
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(CAR_W, 0.8, CAR_L), new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.2 }));
+  body.position.y = 0.6; g.add(body);
+  const cab = new THREE.Mesh(new THREE.BoxGeometry(CAR_W * 0.86, 0.55, CAR_L * 0.5), new THREE.MeshStandardMaterial({ color: "#1b1f25", roughness: 0.2, metalness: 0.5 }));
+  cab.position.set(0, 1.25, 0.2); g.add(cab);
+  return g;
+}
+// A soft dark blot under each car, so they sit on the road instead of floating.
+const shadowTex = canvasTex(64, 128, (g, w, h) => {
+  const gr = g.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w / 2);
+  gr.addColorStop(0, "rgba(0,0,0,0.75)"); gr.addColorStop(1, "rgba(0,0,0,0)");
+  g.setTransform(1, 0, 0, 2, 0, 0); g.fillStyle = gr; g.fillRect(0, 0, w, h);
+});
+function shadowBlot() {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(CAR_W * 1.5, CAR_L * 1.25),
+                           new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2; m.position.y = 0.015;
+  return m;
+}
+// Our car gets a little light of its own, as if lit by the street.
+const egoLight = new THREE.PointLight("#ffffff", 30, 14, 2);
+egoLight.position.copy(P(-6, 0, 4.5));
+scene.add(egoLight);
+const ego = new THREE.Group();
+ego.add(boxCar("#3ddc84"));
+ego.position.copy(P(-CAR_L / 2, 0));
+scene.add(ego);
+ego.add(shadowBlot());
+loadModel("ego").then(m => { if (m) { ego.clear(); ego.add(m); ego.add(shadowBlot()); proto.egoLoaded = true; } });
+loadModel("car").then(m => {
+  if (!m) return;
+  proto.car = m;
+  // cars already on screen were drawn as boxes; swap them for the model
+  for (const o of others.values()) {
+    const body = o.obj.getObjectByName("body");
+    if (body) { o.obj.remove(body); const c = m.clone(true); c.name = "body"; o.obj.add(c); }
+  }
+});
+
+const others = new Map();   // radar track id -> { obj, target: Vector3, yaw }
+function makeOther() {
+  const g = new THREE.Group();
+  const body = proto.car ? proto.car.clone(true) : boxCar("#5d7ea8");
+  body.name = "body";
+  g.add(body);
+  g.add(shadowBlot());
+  const ring = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.0, 32), new THREE.MeshBasicMaterial({ color: "#ff9c3a", transparent: true, opacity: 0 }));
+  ring.rotation.x = -Math.PI / 2; ring.position.y = 0.04; ring.name = "ring"; g.add(ring);
+  scene.add(g);
+  return g;
+}
+function updateOthers(d) {
+  const seen = new Set();
+  const target = d.undertake && d.undertake.active && d.undertake.target ? d.undertake.target.id : null;
+  for (const p of d.points || []) {
+    if (p.d < -5 || p.d > 170 || Math.abs(p.y) > 14) continue;
+    seen.add(p.id);
+    let o = others.get(p.id);
+    if (!o) { o = { obj: makeOther(), fresh: true }; others.set(p.id, o); }
+    o.target = P(p.d + CAR_L / 2, p.y);
+    if (o.fresh) { o.obj.position.copy(o.target); o.fresh = false; }
+    o.obj.getObjectByName("ring").material.opacity = p.id === target ? 0.9 : 0;
+  }
+  for (const [id, o] of others) if (!seen.has(id)) { scene.remove(o.obj); others.delete(id); }
+}
+
+// ---- blind spot -------------------------------------------------------------------
+const bsMat = new THREE.MeshBasicMaterial({ color: "#c77dff", transparent: true, opacity: 0.28, depthWrite: false });
+const bs = { left: new THREE.Mesh(new THREE.PlaneGeometry(2.6, 6), bsMat), right: new THREE.Mesh(new THREE.PlaneGeometry(2.6, 6), bsMat) };
+for (const [side, m] of Object.entries(bs)) {
+  m.rotation.x = -Math.PI / 2; m.position.copy(P(-3.5, side === "left" ? -LANE_W : LANE_W, 0.05)); m.visible = false; scene.add(m);
+}
+
+// ---- HUD ------------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const kph = v => v === null || v === undefined ? "–" : Math.round(v);
+const WORD = { traffic_signals: "lights", give_way: "give way", crossing: "crossing", roundabout: "roundabout",
+               traffic_calming: "bump", lanes: "lanes", maxspeed: "limit", turn_lanes: "turn lanes", stop: "stop",
+               level_crossing: "rail", speed_camera: "camera", class: "road", motorway_junction: "exit",
+               mini_roundabout: "mini roundabout", end_of_mapped_road: "map ends" };
+const TURN = { left: "←", right: "→", through: "↑", none: "↑", "": "↑", slight_left: "↖", slight_right: "↗",
+               sharp_left: "↰", sharp_right: "↱", reverse: "↶", merge_to_left: "⇠", merge_to_right: "⇢" };
+const turnWords = t => t.split("|").map(l => l.split(";").map(k => TURN[k.trim()] ?? k).join("")).join(" ");
+function hud(d) {
+  $("v").textContent = kph(d.v_ego_kph);
+  $("vs").textContent = kph(d.v_cruise_kph);
+  $("eng").className = "eng" + (d.engaged ? " on" : "");
+  const map = d.map || null, mm = map && map.match;
+  const lim = $("lim");
+  if (mm && mm.maxspeed) { lim.textContent = mm.maxspeed; lim.className = "limit"; } else lim.className = "limit off";
+  if (!map) { $("rname").textContent = "no map"; $("rinfo").textContent = "map file not installed"; }
+  else if (!map.fix) { $("rname").textContent = "–"; $("rinfo").textContent = "waiting for GPS"; }
+  else if (!mm) { $("rname").textContent = "–"; $("rinfo").textContent = "no road matched"; }
+  else {
+    $("rname").textContent = [mm.ref, mm.name].filter(Boolean).join(" · ") || mm.class;
+    $("rinfo").textContent = [mm.class.replace("_", " "), mm.lanes ? mm.lanes + " lane" + (mm.lanes > 1 ? "s" : "") : null,
+                              mm.turn_lanes ? turnWords(mm.turn_lanes) : null, mm.oneway ? "one-way" : null,
+                              mm.roundabout ? "roundabout" : null].filter(Boolean).join(" · ");
+  }
+  // Events at 0 m are the road we are already on (a sign at the start of our way).
+  const ev = (mm && mm.ahead && mm.ahead.events || []).filter(e => e.kind !== "class" && e.at_m >= 3).slice(0, 6);
+  $("evs").innerHTML = ev.map(e => {
+    const hot = (e.kind === "traffic_signals" || e.kind === "stop" || e.kind === "give_way" || e.kind === "roundabout") && e.at_m < 150;
+    const what = (WORD[e.kind] || e.kind) + (e.to !== undefined && e.kind !== "turn_lanes" ? " " + e.to : "");
+    return `<span class="ev${hot ? " hot" : ""}"><b>${e.at_m} m</b>${what}</span>`;
+  }).join("");
+  const u = d.undertake || {};
+  const cg = $("cg");
+  cg.className = "chip" + (u.active ? " on" : "");
+  cg.innerHTML = `<u>undertaking</u>${u.active ? "holding " + kph(u.cap * 3.6) + " km/h" : (u.why || "–").replace(/,.*/, "")}`;
+  const L = d.left_lane || {}, n = L.nearest;
+  $("cl").innerHTML = `<u>left lane</u>${n ? kph(n.v_abs * 3.6) + " km/h · " + Math.round(n.d) + " m" : "clear"}`;
+  $("note").textContent = map && map.fix && mm ? `gps ±${map.accuracy_m ?? "?"} m · map off ${mm.offset_m} m` : "";
+  bs.left.visible = !!(d.blindspot && d.blindspot.left); bs.right.visible = !!(d.blindspot && d.blindspot.right);
+}
+
+// ---- loop -----------------------------------------------------------------------------
+let last = null;
+async function tick() {
+  try {
+    const q = new URLSearchParams(location.search).get("f");
+    const d = await (await fetch("/data.json" + (q ? "?f=" + q : ""), { cache: "no-store" })).json();
+    if (!d.ready) return;
+    last = d;
+    hud(d);
+    const mdl = buildModel(d.scene || {});
+    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading);
+    flowSpeed = Math.max(0, (d.v_ego_kph || 0) / 3.6); flowFrom = performance.now(); flow.position.z = 0;
+    updateOthers(d);
+    window.__frames = (window.__frames || 0) + 1;
+  } catch (e) { /* off wifi; keep the last frame */ }
+}
+setInterval(tick, 400); tick();
+
+function frame() {
+  // at most 1 s of dead reckoning, in case data stops
+  flow.position.z = flowSpeed * Math.min(1, (performance.now() - flowFrom) / 1000);
+  for (const o of others.values()) if (o.target) o.obj.position.lerp(o.target, 0.2);
+  renderer.render(scene, camera);
+  if (DEBUG) document.title = JSON.stringify({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
+                                               geoms: renderer.info.memory.geometries, frames: window.__frames || 0 });
+  requestAnimationFrame(frame);
+}
+frame();
+</script>
+</body>
+</html>
