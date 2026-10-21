@@ -79,6 +79,7 @@ import { GLTFLoader } from "/static/three/loaders/GLTFLoader.js";
 // at the front bumper (radar and model) or at the GPS fix (map). three.js is
 // x right, y up, z towards the camera, so (x, y) maps to (y, h, -x).
 const P = (x, y, h = 0) => new THREE.Vector3(y, h, -x);
+const DEBUG = new URLSearchParams(location.search).has("debug");
 const LANE_W = 3.4;
 const CAR_L = 4.6, CAR_W = 1.85;
 
@@ -309,13 +310,18 @@ function trafficLight(tr, s, offset) {
 
 // ---- the road from the map -------------------------------------------------------
 let roadGroup = null;
+// Road and lane lines are rebuilt each time data arrives (2.5 Hz). In between,
+// the world flows past at our own speed so markings do not jump 10 m at a time.
+const flow = new THREE.Group();
+scene.add(flow);
+let flowSpeed = 0, flowFrom = performance.now();
 
 function dispose(o) {
   o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && !Object.values(M).includes(c.material)) c.material.dispose(); });
 }
 
 function buildRoad(mm, lanePos, modelReach, modelHeading) {
-  if (roadGroup) { scene.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
+  if (roadGroup) { flow.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
   if (!mm || !mm.path || !mm.path.pts || mm.path.pts.length < 2) return;
   const pts = mm.path.pts, turns = mm.path.turns || [];
   const tr = track(pts);
@@ -440,13 +446,13 @@ function buildRoad(mm, lanePos, modelReach, modelHeading) {
     if (Math.abs(delta) < 8 * Math.PI / 180) outer.rotation.y = -delta;
   }
   roadGroup = outer;
-  scene.add(outer);
+  flow.add(outer);
 }
 
 // ---- the model's lane lines, close in -------------------------------------------
 let modelGroup = null;
 function buildModel(sc) {
-  if (modelGroup) { scene.remove(modelGroup); dispose(modelGroup); modelGroup = null; }
+  if (modelGroup) { flow.remove(modelGroup); dispose(modelGroup); modelGroup = null; }
   const grp = new THREE.Group();
   let reach = 0;
   const strip = (pts, w, mat) => {
@@ -461,7 +467,7 @@ function buildModel(sc) {
     reach = Math.max(reach, l.points[l.points.length - 1][0]);
   });
   (sc.road_edges || []).forEach(e => e && strip(e.points, 0.25, M.edge));
-  modelGroup = grp; scene.add(grp);
+  modelGroup = grp; flow.add(grp);
   // Our lane's direction 20-50 m ahead, from the nearest confident line.
   let heading = null, best = 1e9;
   for (const l of sc.lane_lines || []) {
@@ -479,7 +485,10 @@ const loader = new GLTFLoader();
 const MODELS = {
   // Both generated models face +z; our forward is -z. The ego texture came out
   // darker than its reference image, so it is lifted.
-  ego: { url: "/assets/ego.glb", length: 4.64, yaw: 180, tint: 2.6 },
+  // ego.glb is built from a photo of the car itself (dark graphite). Its
+  // texture drifted to teal, so blue-green is pulled back to grey while the
+  // red rear lights keep their colour.
+  ego: { url: "/assets/ego.glb", length: 4.64, yaw: 180, tint: 1.25, degrey: 0.15 },
   car: { url: "/assets/car.glb", length: 4.4, yaw: 180, tint: 1.3 },
 };
 const proto = {};
@@ -489,6 +498,16 @@ function loadModel(key) {
     const root = gltf.scene;
     root.rotation.y = cfg.yaw * Math.PI / 180;
     if (cfg.tint) root.traverse(o => { if (o.isMesh && o.material && o.material.color) o.material.color.multiplyScalar(cfg.tint); });
+    if (cfg.degrey !== undefined) root.traverse(o => {
+      if (!o.isMesh || !o.material) return;
+      o.material.onBeforeCompile = sh => {
+        sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", `#include <map_fragment>
+          { float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+            float cool = smoothstep(0.0, 0.08, max(diffuseColor.g, diffuseColor.b) - diffuseColor.r);
+            diffuseColor.rgb = mix(diffuseColor.rgb, vec3(lum) * vec3(0.97, 0.99, 1.04), cool * (1.0 - ${cfg.degrey.toFixed(2)})); }`);
+      };
+      o.material.needsUpdate = true;
+    });
     const box = new THREE.Box3().setFromObject(root), size = new THREE.Vector3(), c = new THREE.Vector3();
     box.getSize(size); box.getCenter(c);
     const k = cfg.length / Math.max(size.x, size.z);
@@ -528,12 +547,22 @@ ego.position.copy(P(-CAR_L / 2, 0));
 scene.add(ego);
 ego.add(shadowBlot());
 loadModel("ego").then(m => { if (m) { ego.clear(); ego.add(m); ego.add(shadowBlot()); proto.egoLoaded = true; } });
-loadModel("car").then(m => { if (m) proto.car = m; });
+loadModel("car").then(m => {
+  if (!m) return;
+  proto.car = m;
+  // cars already on screen were drawn as boxes; swap them for the model
+  for (const o of others.values()) {
+    const body = o.obj.getObjectByName("body");
+    if (body) { o.obj.remove(body); const c = m.clone(true); c.name = "body"; o.obj.add(c); }
+  }
+});
 
 const others = new Map();   // radar track id -> { obj, target: Vector3, yaw }
 function makeOther() {
   const g = new THREE.Group();
-  g.add(proto.car ? proto.car.clone(true) : boxCar("#5d7ea8"));
+  const body = proto.car ? proto.car.clone(true) : boxCar("#5d7ea8");
+  body.name = "body";
+  g.add(body);
   g.add(shadowBlot());
   const ring = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.0, 32), new THREE.MeshBasicMaterial({ color: "#ff9c3a", transparent: true, opacity: 0 }));
   ring.rotation.x = -Math.PI / 2; ring.position.y = 0.04; ring.name = "ring"; g.add(ring);
@@ -616,6 +645,7 @@ async function tick() {
     hud(d);
     const mdl = buildModel(d.scene || {});
     buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading);
+    flowSpeed = Math.max(0, (d.v_ego_kph || 0) / 3.6); flowFrom = performance.now(); flow.position.z = 0;
     updateOthers(d);
     window.__frames = (window.__frames || 0) + 1;
   } catch (e) { /* off wifi; keep the last frame */ }
@@ -623,8 +653,12 @@ async function tick() {
 setInterval(tick, 400); tick();
 
 function frame() {
+  // at most 1 s of dead reckoning, in case data stops
+  flow.position.z = flowSpeed * Math.min(1, (performance.now() - flowFrom) / 1000);
   for (const o of others.values()) if (o.target) o.obj.position.lerp(o.target, 0.2);
   renderer.render(scene, camera);
+  if (DEBUG) document.title = JSON.stringify({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
+                                               geoms: renderer.info.memory.geometries, frames: window.__frames || 0 });
   requestAnimationFrame(frame);
 }
 frame();
