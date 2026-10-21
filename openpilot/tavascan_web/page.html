@@ -68,6 +68,8 @@
 <div class="chips">
   <div class="chip" id="c1"><u>undertaking</u><i>–</i></div>
   <div class="chip" id="c3"><u>left lane</u><i>–</i></div>
+  <div class="chip" id="m1"><u>road (osm)</u><i>–</i></div>
+  <div class="chip" id="m2"><u>ahead (osm)</u><i>–</i></div>
 </div>
 
 <div class="status"><span id="s1">connecting…</span><span id="s2"></span></div>
@@ -339,6 +341,22 @@ function render(d) {
   set("s2", `radar ${d.radar_age_s ?? "?"}s · psd ${p.age_s ?? "?"}s`
       + ` · guidance ${p.guidance === null || p.guidance === undefined ? "?" : p.guidance ? "on" : "off"}`
       + " · shadow only");
+
+  // Our own OSM matcher. Lanes and turn lanes are for our direction of travel.
+  const mm = (d.map || {}).match;
+  if (!d.map) chip("m1", "road (osm)", false, "no map file");
+  else if (!d.map.fix) chip("m1", "road (osm)", false, "no gps fix");
+  else if (!mm) chip("m1", "road (osm)", false, "no road matched");
+  else chip("m1", "road (osm)", false,
+            `${mm.ref ? mm.ref + " " : ""}${mm.name || mm.class} · ${mm.class} · ${mm.lanes ?? "?"} lane(s)`
+            + `${mm.turn_lanes ? " · " + mm.turn_lanes : ""}${mm.maxspeed ? " · " + mm.maxspeed : ""}`);
+  const ev = (mm && mm.ahead && mm.ahead.events) || [];
+  const word = {traffic_signals: "lights", give_way: "give way", crossing: "crossing", roundabout: "roundabout",
+                traffic_calming: "bump", lanes: "lanes", maxspeed: "limit", turn_lanes: "turn lanes",
+                stop: "stop", level_crossing: "rail", speed_camera: "camera", class: "road", motorway_junction: "exit"};
+  chip("m2", "ahead (osm)", ev.some(e => e.kind === "traffic_signals" && e.at_m < 150),
+       ev.length ? ev.slice(0, 4).map(e => `${word[e.kind] || e.kind}${e.to !== undefined ? " " + e.to : ""} ${e.at_m} m`).join(" · ")
+                 : "nothing within 500 m");
 
   draw(document.getElementById("bev"), d);
 }
