@@ -23,7 +23,8 @@ from opendbc.car.common.conversions import Conversions as CV
 # --- Undertaking guard ------------------------------------------------------
 # Undertaking is illegal in Denmark. If a slower vehicle sits in the left lane,
 # hold back rather than pass it on the right.
-UT_MIN_SPEED = 70 * CV.KPH_TO_MS
+# Lowered from 70 on 2026-10-21 at the driver's request.
+UT_MIN_SPEED = 40 * CV.KPH_TO_MS
 UT_MAX_RANGE = 90.0
 UT_MIN_RANGE = 3.0
 UT_LAT = (-6.0, -2.0)                 # m, left lane (negative is left)
@@ -33,8 +34,17 @@ UT_SLIP = 4 * CV.KPH_TO_MS            # fastest we close in on it from far back
 # something standing still, or oncoming traffic on a two-lane road. In shadow
 # mode from 2026-10-07 to 2026-10-13 the rule fired twice on such objects, at 9
 # and 45 km/h, both on 80 km/h roads. Real left-lane traffic below this is a
-# queue, where passing on the right is allowed anyway.
-UT_MIN_TARGET_SPEED = 50 * CV.KPH_TO_MS
+# queue, where passing on the right is allowed anyway. Lowered from 50 with
+# UT_MIN_SPEED, or the rule could not act at 40-50 km/h at all.
+UT_MIN_TARGET_SPEED = 30 * CV.KPH_TO_MS
+# Below UT_FULL_SPEED, a left-lane car braking harder than UT_TURNING_DECEL is
+# taken to be turning left or stopping at a junction, which Danish law lets us
+# pass on the right. Replayed over 78 drives, the 40-70 km/h range added when
+# UT_MIN_SPEED came down from 70 mostly fired on such cars, approaching lights,
+# asking for up to 25 km/h off; this takes cuts over 10 km/h there from 15 to
+# 4. Above UT_FULL_SPEED nothing changes.
+UT_FULL_SPEED = 70 * CV.KPH_TO_MS
+UT_TURNING_DECEL = -1.0               # m/s2
 # Where to settle: this many seconds behind the left-lane car, measured along
 # the road. Further back than that we may still close in, by at most UT_SLIP
 # faster than it; closer than that we drop back, by at most UT_BACKOFF slower.
@@ -96,12 +106,13 @@ def undertake(points: list, v_ego: float, rightmost_lane: bool | None,
   judging by v_ego would release the cap, let us speed up and catch it again,
   over and over. Without a set speed (not engaged) v_ego stands in for it.
   """
-  moving = [p for p in points if p["v_abs"] >= UT_MIN_TARGET_SPEED]
+  moving = [p for p in points if p["v_abs"] >= UT_MIN_TARGET_SPEED and
+            not (v_ego < UT_FULL_SPEED and p.get("a_abs", 0.0) < UT_TURNING_DECEL)]
   o = _closest(moving, UT_LAT, UT_MAX_RANGE)
   v_want = v_cruise if v_cruise else v_ego
 
   if v_ego < UT_MIN_SPEED:
-    return {"active": False, "cap": None, "why": "below 70 km/h", "target": o}
+    return {"active": False, "cap": None, "why": "below 40 km/h", "target": o}
   if o is None:
     return {"active": False, "cap": None, "why": "no vehicle in left lane", "target": None}
   # Any car slower than the speed we want counts. A tolerance here was a hole:
@@ -110,13 +121,12 @@ def undertake(points: list, v_ego: float, rightmost_lane: bool | None,
   if o["v_abs"] >= v_want:
     return {"active": False, "cap": None, "why": "left lane is not slower", "target": o}
 
-  # Undertaking only applies when we are in a lane to its right. Being able to
-  # see a lane further right means the slower car is not the one we would be
-  # passing on the inside. Unknown is allowed through: a left-lane object
-  # already implies a lane to our left.
-  if rightmost_lane is False:
-    return {"active": False, "cap": None,
-            "why": "left lane is slower, but there is a lane to our right", "target": o}
+  # Undertaking is passing on the inside whichever lane we are in: from the
+  # middle of three lanes as much as from the right one. An earlier version
+  # stood aside whenever the model saw a lane to our right; on 2026-10-21 an
+  # exit lane appearing there switched the rule off for 14 s while we closed
+  # from 36 m to 21 m on a slower car, and it then had to brake 9 km/h.
+  # rightmost_lane is kept in the signature for the caller's report.
 
   # Hold back UT_GAP_S behind it rather than just matching its speed: matching
   # it plus a small slip still crept past on the inside, only slowly.
