@@ -71,6 +71,7 @@ def _collect() -> None:
   was_active = False
   osm_view: dict = {"params": {}, "maps": osm.maps_installed()}
   osm_tick = 0
+  map_view: dict | None = None
   last_beat = 0.0
 
   while True:
@@ -101,6 +102,9 @@ def _collect() -> None:
     # above already does -- and it is the one map signal that could be early
     # enough to brake for a roundabout.
     osm_view["horizon"] = osm.map_horizon()
+    # Our own OSM matcher (tavascan_map), when its map file is installed.
+    if osm_tick % 5 == 1:
+      map_view = read_map()
 
     lanes = shadow.lane_position(sm["modelV2"].laneLineProbs, sm["modelV2"].roadEdges)
     md = sm["modelV2"]
@@ -140,6 +144,7 @@ def _collect() -> None:
       "scene": geometry.scene(sm["modelV2"]),
       "lanes": lanes,
       "osm": osm_view,
+      "map": map_view,
       "psd": psd_snap,
       "undertake": ut,
       "left_lane": left,
@@ -168,6 +173,28 @@ def _collect() -> None:
     was_active = active
 
     rk.keep_time()
+
+
+MAP_PATH = "/dev/shm/tavascan_map.json"
+
+
+def read_map() -> dict | None:
+  try:
+    with open(MAP_PATH) as f:
+      return json.load(f)
+  except (OSError, ValueError):
+    return None
+
+
+def slim_map(m: dict | None) -> dict | None:
+  """The road and the next few things on it; the full lookahead is in /data/tavascan_map.jsonl."""
+  st = (m or {}).get("match")
+  if not st:
+    return None
+  keep = ("class", "name", "ref", "lanes", "turn_lanes", "maxspeed", "roundabout", "offset_m")
+  out = {k: st.get(k) for k in keep}
+  out["ahead"] = [(e["kind"], e["at_m"], e.get("to")) for e in (st.get("ahead") or {}).get("events", [])[:6]]
+  return out
 
 
 def trace_record(snap: dict) -> dict:
@@ -200,6 +227,7 @@ def trace_record(snap: dict) -> dict:
     # distance it takes to get down to that speed.
     "map_horizon": (snap.get("osm") or {}).get("horizon"),
     "radar_age_s": snap.get("radar_age_s"),
+    "map": slim_map(snap.get("map")),
     "psd": {k: (snap.get("psd") or {}).get(k)
             for k in ("guidance", "here", "branches", "age_s")},
   }
