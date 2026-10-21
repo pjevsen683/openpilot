@@ -30,6 +30,8 @@ STAY_BONUS = 8.0        # m, for the way we were on
 JOINED_BONUS = 4.0      # m, for a way joined to it
 MIN_HEADING_SPEED = 2.0  # m/s, below this the GPS bearing is noise
 AHEAD_M = 500.0
+BEHIND_M = 40.0
+PATH_STEP_M = 5.0
 POINT_ON_PATH_M = 12.0
 
 
@@ -91,6 +93,7 @@ class Map:
     self.cur: Way | None = None
     self.dir = 1
     self.seg = 0
+    self._heading: float | None = None
 
   def way(self, wid: int) -> Way | None:
     w = self._cache.get(wid)
@@ -135,6 +138,8 @@ class Map:
     return best
 
   def match(self, lat: float, lon: float, heading: float, speed: float) -> dict | None:
+    if speed >= MIN_HEADING_SPEED or self._heading is None:
+      self._heading = heading
     if speed < MIN_HEADING_SPEED and self.cur is not None:
       dist, seg, f, _ = self._project(self.cur, lat, lon)
       self.seg = seg
@@ -166,8 +171,50 @@ class Map:
   def _state(self, lat, lon, dist, seg, f) -> dict:
     out = self.cur.summary(self.dir)
     out["offset_m"] = round(dist, 1)
-    out["ahead"] = self._ahead(seg, f)
+    ahead = self._ahead(seg, f)
+    path = ahead.pop("_path")
+    out["ahead"] = ahead
+    out["path"] = self._car_frame(lat, lon, self._behind(seg, f) + path)
     return out
+
+  def _car_frame(self, lat, lon, path) -> dict:
+    """The road as [x ahead, y right] in metres from the GPS fix, every PATH_STEP_M or so,
+    with our direction's lane count, an index into `turns` (or -1) and the distance
+    along the road from us (negative behind) per point."""
+    b = math.radians(self._heading or 0.0)
+    cb, sb = math.cos(b), math.sin(b)
+    kx = 111320.0 * math.cos(math.radians(lat))
+    turns: list[str] = []
+    pts = []
+    last_s = None
+    for la, lo, s, lanes, turn in path:
+      if last_s is not None and s - last_s < PATH_STEP_M and s > 0:
+        continue
+      last_s = s
+      dn, de = (la - lat) * 111320.0, (lo - lon) * kx
+      if turn and turn not in turns:
+        turns.append(turn)
+      pts.append([round(dn * cb + de * sb, 1), round(-dn * sb + de * cb, 1), lanes or 0,
+                  turns.index(turn) if turn else -1, round(s)])
+    return {"pts": pts, "turns": turns}
+
+  def _behind(self, seg: int, f: float) -> list:
+    """BEHIND_M of the current way behind us, nearest last, for drawing."""
+    w, d = self.cur, self.dir
+    info = w.directed(d)
+    idx = seg if d > 0 else seg + 1
+    out = []
+    s = 0.0
+    lat0 = w.lat[seg] + f * (w.lat[seg + 1] - w.lat[seg]); lon0 = w.lon[seg] + f * (w.lon[seg + 1] - w.lon[seg])
+    prev = (lat0, lon0)
+    while 0 <= idx < len(w.lat) and s < BEHIND_M:
+      p = (w.lat[idx], w.lon[idx])
+      s += self._dist(prev, p)
+      out.append((p[0], p[1], -s, info["lanes"], info["turn_lanes"]))
+      prev = p
+      idx -= d
+    out.reverse()
+    return out + [(lat0, lon0, 0.0, info["lanes"], info["turn_lanes"])]
 
   # --- looking ahead -----------------------------------------------------------
   def _ahead(self, seg: int, f: float) -> dict:
@@ -183,8 +230,14 @@ class Map:
     while s < AHEAD_M:
       while 0 <= idx < len(w.lat) and s < AHEAD_M:
         p = (w.lat[idx], w.lon[idx])
-        s += self._dist(prev, p)
-        path.append((p[0], p[1], s))
+        step = self._dist(prev, p)
+        # long straight segments are split so the drawn road can bend smoothly
+        # into the next one and lane changes land where they are
+        n = max(1, int(step // PATH_STEP_M))
+        for j in range(1, n + 1):
+          q = (prev[0] + (p[0] - prev[0]) * j / n, prev[1] + (p[1] - prev[1]) * j / n)
+          path.append((q[0], q[1], s + step * j / n, last_info["lanes"], last_info["turn_lanes"]))
+        s += step
         prev = p
         idx += d
       if s >= AHEAD_M:
@@ -209,9 +262,9 @@ class Map:
         events.append({"at_m": round(s), "kind": "turn_lanes", "to": info["turn_lanes"]})
       last_info = info
       idx = start + d
-    events += self._points_on(path)
+    events += self._points_on([(p[0], p[1], p[2]) for p in path])
     events.sort(key=lambda e: e["at_m"])
-    return {"horizon_m": round(s), "events": events[:20]}
+    return {"horizon_m": round(s), "events": events[:20], "_path": path}
 
   def _continue(self, w: Way, d: int, node: int, seen: set):
     """Where the road goes on from node, the end of w: (way, direction, index of node in it).

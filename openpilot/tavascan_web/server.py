@@ -10,6 +10,7 @@ the old process has not quite let go.
 Serving only. Nothing here reads the car or writes anything.
 """
 import json
+import os
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,10 @@ from socketserver import ThreadingMixIn
 
 from openpilot.common.swaglog import cloudlog
 
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+ASSETS_DIR = os.getenv("TAVASCAN_ASSETS", "/data/tavascan_assets")
+CONTENT_TYPES = {".js": "text/javascript", ".glb": "model/gltf-binary", ".png": "image/png",
+                 ".jpg": "image/jpeg", ".json": "application/json", ".css": "text/css"}
 BIND_RETRY_S = 2.0
 BIND_ATTEMPTS = 30
 
@@ -50,8 +55,33 @@ def make_handler(page_path: str, snapshot, lock):
             self._send(200, f.read(), "text/html; charset=utf-8")
         except OSError:
           self._send(500, b"page missing", "text/plain")
+      elif self.path in ("/3d", "/3d.html"):
+        try:
+          with open(os.path.join(os.path.dirname(page_path), "page3d.html"), "rb") as f:
+            self._send(200, f.read(), "text/html; charset=utf-8")
+        except OSError:
+          self._send(500, b"page missing", "text/plain")
+      elif self.path.startswith("/static/") or self.path.startswith("/assets/"):
+        self._file()
       else:
         self._send(404, b"not found", "text/plain")
+
+    def _file(self):
+      """Files from tavascan_web/static (in the repo) and ASSETS_DIR (3D models kept out of it)."""
+      rel = self.path.split("?", 1)[0]
+      root = STATIC_DIR if rel.startswith("/static/") else ASSETS_DIR
+      path = os.path.realpath(os.path.join(root, rel.split("/", 2)[2]))
+      if not path.startswith(os.path.realpath(root) + os.sep) or not os.path.isfile(path):
+        self._send(404, b"not found", "text/plain")
+        return
+      with open(path, "rb") as f:
+        body = f.read()
+      self.send_response(200)
+      self.send_header("Content-Type", CONTENT_TYPES.get(os.path.splitext(path)[1], "application/octet-stream"))
+      self.send_header("Content-Length", str(len(body)))
+      self.send_header("Cache-Control", "max-age=3600")
+      self.end_headers()
+      self.wfile.write(body)
 
   return Handler
 
