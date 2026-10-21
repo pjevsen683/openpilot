@@ -208,6 +208,12 @@ function signTex(kind, text) {
       g.fillStyle = "#1d5fbf"; g.fillRect(8, 8, 112, 112); g.fillStyle = "#fff"; g.fillRect(30, 46, 68, 40); g.beginPath(); g.arc(64, 66, 13, 0, 7); g.fillStyle = "#1d5fbf"; g.fill();
     } else if (kind === "rail") {
       g.strokeStyle = "#d8232a"; g.lineWidth = 18; g.beginPath(); g.moveTo(16, 16); g.lineTo(112, 112); g.moveTo(112, 16); g.lineTo(16, 112); g.stroke();
+    } else if (kind === "exit") {
+      // Danish motorway exit: blue sign, white arrow up and to the right, exit number
+      g.fillStyle = "#1d5fbf"; g.fillRect(4, 14, 120, 100); g.strokeStyle = "#fff"; g.lineWidth = 4; g.strokeRect(9, 19, 110, 90);
+      g.lineWidth = 12; g.lineCap = "round"; g.beginPath(); g.moveTo(44, 100); g.lineTo(44, 66); g.lineTo(78, 38); g.stroke();
+      g.fillStyle = "#fff"; g.beginPath(); g.moveTo(92, 26); g.lineTo(66, 34); g.lineTo(84, 52); g.closePath(); g.fill();
+      if (text) { g.font = "bold 26px system-ui"; g.textAlign = "center"; g.textBaseline = "middle"; g.fillText(text, 92, 92); }
     } else if (kind === "bump") {
       g.fillStyle = "#f2c200"; g.beginPath(); g.moveTo(8, 112); g.lineTo(64, 10); g.lineTo(120, 112); g.closePath(); g.fill();
       g.fillStyle = "#111"; g.beginPath(); g.moveTo(34, 92); g.quadraticCurveTo(64, 50, 94, 92); g.fill();
@@ -425,8 +431,12 @@ function buildRoad(mm, lanePos, modelReach, modelHeading) {
     } else if (e.kind === "roundabout") {
       grp.add(signPost(signTex("roundabout"), tr, Math.max(2, s - 25), signOff(s)));
     } else if (e.kind === "traffic_calming") {
-      const b = band(tr, s - 1.2, s + 1.2, leftEdge, rightEdge, M.bump, 0.03, 1.2);
+      // a bump spans the whole road, both directions
+      const b = band(tr, s - 1.2, s + 1.2, s => twoWay ? -oppLanes * LANE_W : leftEdge(s), rightEdge, M.bump, 0.03, 1.2);
       if (b) grp.add(b);
+    } else if (e.kind === "motorway_junction") {
+      let t = {}; try { t = JSON.parse(e.tags || "{}"); } catch (err) {}
+      grp.add(signPost(signTex("exit", t.ref || ""), tr, Math.max(2, s - 30), signOff(s), 2.6, 1.6));
     } else if (e.kind === "speed_camera") {
       grp.add(signPost(signTex("camera"), tr, s, signOff(s)));
     } else if (e.kind === "level_crossing") {
@@ -466,7 +476,7 @@ function buildModel(sc) {
     strip(l.points, 0.13, M.model);
     reach = Math.max(reach, l.points[l.points.length - 1][0]);
   });
-  (sc.road_edges || []).forEach(e => e && strip(e.points, 0.25, M.edge));
+  (sc.road_edges || []).forEach(e => e && strip(e.points, 0.12, M.edge));
   modelGroup = grp; flow.add(grp);
   // Our lane's direction 20-50 m ahead, from the nearest confident line.
   let heading = null, best = 1e9;
