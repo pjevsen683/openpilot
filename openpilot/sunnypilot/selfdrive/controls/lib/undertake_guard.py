@@ -15,8 +15,9 @@ DESIGN
     can be switched off mid-drive.
   * Only ever CAPS the desired speed. It never raises it, and it never brakes
     on its own: the cap goes through the ordinary cruise acceleration limits.
-  * Only above 70 km/h, and the cap never goes below 70 km/h, so it cannot
-    touch stopping, pulling away or stop-and-go traffic.
+  * Only above 40 km/h, and the cap never goes below 40 km/h, so it cannot
+    touch stopping, pulling away or stop-and-go traffic. (70 km/h until
+    2026-10-21.)
   * It settles one second behind the left-lane car, so a car that stays out
     there is followed rather than slowly passed on the inside.
   * The rule must hold for ENGAGE_S before the cap applies, so a radar track
@@ -44,6 +45,8 @@ CAP_FILTER_S = 2.0
 # radarTracks arrives at 20 Hz; older than this and we act as if it is empty.
 RADAR_STALE_S = 0.5
 PARAM_PERIOD_S = 1.0
+# Track speeds are differenced over this long to get each car's own accel.
+ACCEL_WINDOW_S = 1.0
 
 
 class UndertakeGuard:
@@ -54,6 +57,8 @@ class UndertakeGuard:
     self._param_age = PARAM_PERIOD_S
     self._radar_age = RADAR_STALE_S
     self._points: list = []
+    self._t = 0.0
+    self._hist: dict[int, tuple[float, float]] = {}   # track id -> (time, v_abs) about ACCEL_WINDOW_S ago
     self._on_s = 0.0
     self._off_s = 0.0
     self.cap: float | None = None   # m/s, or None when not capping
@@ -76,6 +81,22 @@ class UndertakeGuard:
     self._raw_cap = None
     self.why = ""
 
+  def _add_accel(self) -> None:
+    """Each point's own acceleration, from its speed ACCEL_WINDOW_S ago."""
+    seen = set()
+    for p in self._points:
+      seen.add(p["id"])
+      old = self._hist.get(p["id"])
+      if old is None or self._t - old[0] > 2 * ACCEL_WINDOW_S:
+        self._hist[p["id"]] = (self._t, p["v_abs"])
+        continue
+      if self._t - old[0] >= 0.5 * ACCEL_WINDOW_S:
+        p["a_abs"] = (p["v_abs"] - old[1]) / (self._t - old[0])
+      if self._t - old[0] >= ACCEL_WINDOW_S:
+        self._hist[p["id"]] = (self._t, p["v_abs"])
+    for k in [k for k in self._hist if k not in seen]:
+      del self._hist[k]
+
   def update(self, sm, v_ego: float, v_cruise: float, dt: float) -> None:
     """Called every planner tick with the planner's SubMaster and set speed."""
     self._read_param(dt)
@@ -83,10 +104,12 @@ class UndertakeGuard:
       self._reset()
       return
 
+    self._t += dt
     self._sm.update(0)
     if self._sm.updated["radarTracks"]:
       self._points = geometry.radar_points(self._sm["radarTracks"], v_ego)
       self._radar_age = 0.0
+      self._add_accel()
     else:
       self._radar_age += dt
       if self._radar_age > RADAR_STALE_S:
