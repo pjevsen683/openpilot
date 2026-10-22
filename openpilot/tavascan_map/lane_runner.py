@@ -3,6 +3,7 @@ from openpilot.tavascan_map.lane_inputs import LaneChangeWatch, observation
 from openpilot.tavascan_map.lanes import LaneFilter
 
 MODEL_LANE_PROB = 0.3
+MODEL_L_HOLD_S = 2.0   # the model's lane count must hold this long before it is used
 MOTORWAY = {"motorway", "trunk"}
 TURN_DEG = 45.0       # a change of road with this much change of heading is a turn
 TURN_WINDOW_S = 6.0   # ... compared with our heading this long ago
@@ -26,20 +27,36 @@ class LaneRunner:
     self._layout = None          # (way, lanes, turn_lanes) last applied
     self._road = None            # (class, ref, name) of the last matched way
     self._headings: list = []    # (t, heading) over the last TURN_WINDOW_S
+    self._model_L = None         # the model's lane count, once it has held
+    self._model_cand = (None, 0.0)
+    self.source = "none"         # where L came from: "map", "model" or "none"
 
-  def _model_lanes(self, model) -> int:
-    """Lanes in our direction as far as the model can see: ours plus confident neighbours."""
-    probs = model.get("lane_probs") or []
-    if len(probs) != 4:
-      return self.f.L
-    return 1 + int(probs[0] > MODEL_LANE_PROB) + int(probs[3] > MODEL_LANE_PROB)
+  def _model_lanes(self, model, t) -> int | None:
+    """Lanes in our direction as far as the model can see (ours plus confident
+    neighbours), once that count has held for MODEL_L_HOLD_S."""
+    probs = (model or {}).get("lane_probs") or []
+    if len(probs) == 4:
+      n = 1 + int(probs[0] > MODEL_LANE_PROB) + int(probs[3] > MODEL_LANE_PROB)
+      if self._model_L is None:
+        self._model_L = n
+      elif n == self._model_L:
+        self._model_cand = (None, t)
+      elif n != self._model_cand[0]:
+        self._model_cand = (n, t)
+      elif t - self._model_cand[1] >= MODEL_L_HOLD_S:
+        self._model_L, self._model_cand = n, (None, t)
+    return self._model_L
 
   def step(self, t, v_ego, dt, match, model, car, radar) -> dict:
-    # 1. layout: from the map when matched, otherwise keep what we had
+    # 1. layout: from the map when matched; the model's count where the map has
+    # none, or before any match; after a match is lost, what we had
+    model_L = self._model_lanes(model, t)
     if match:
-      layout = (match.get("way"), match.get("lanes") or self._model_lanes(model), match.get("turn_lanes"))
-    elif self._layout is None:
-      layout = (None, self._model_lanes(model), None)
+      layout = (match.get("way"), match.get("lanes") or model_L or self.f.L, match.get("turn_lanes"))
+      self.source = "map" if match.get("lanes") else ("model" if model_L else "none")
+    elif self._layout is None or self._layout[0] is None:
+      layout = (None, model_L or self.f.L, None)
+      self.source = "model" if model_L else "none"
     else:
       layout = self._layout
     if self._layout is None:
@@ -67,14 +84,17 @@ class LaneRunner:
       if match.get("heading") is not None:
         self._headings.append((t, match["heading"]))
     self._headings = [h for h in self._headings if t - h[0] <= TURN_WINDOW_S]
-    # 2. lane changes
-    ev = self.watch.update(model.get("lc_state", "off"), model.get("lc_dir", "none"),
-                           car.get("left_blinker", False), car.get("right_blinker", False),
-                           model.get("lane_ys") or [], t)
-    if ev:
-      self.f.lane_change(ev[0], why=ev[1])
-    # 3. diffusion by distance, then observations
+    # 2. diffusion by distance
     self.f.diffuse(max(0.0, v_ego) * dt)
-    self.f.observe(observation(model.get("lane_ys") or [], model.get("lane_probs") or [],
-                               model.get("edge_ys") or [], model.get("edge_stds") or [], radar))
-    return self.f.output()
+    # 3. lane changes and observations, only on a fresh model frame (None = stale)
+    if model is not None:
+      ev = self.watch.update(model.get("lc_state", "off"), model.get("lc_dir", "none"),
+                             car.get("left_blinker", False), car.get("right_blinker", False),
+                             model.get("lane_ys") or [], t, v_ego, model.get("lane_probs"))
+      if ev:
+        self.f.lane_change(ev[0], why=ev[1])
+      self.f.observe(observation(model.get("lane_ys") or [], model.get("lane_probs") or [],
+                                 model.get("edge_ys") or [], model.get("edge_stds") or [], radar))
+    out = self.f.output()
+    out["source"] = self.source
+    return out

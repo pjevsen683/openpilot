@@ -37,6 +37,7 @@ STALE_FIX_S = 2.0
 LOOP_HZ = 10.0
 MATCH_PERIOD_S = 0.5
 WRITE_PERIOD_S = 0.5
+RADAR_STALE_S = 0.5
 
 
 def _write_atomic(path: str, data: dict) -> None:
@@ -72,6 +73,7 @@ def main() -> None:
   next_open = 0.0
   runner = LaneRunner()
   radar: list = []
+  radar_t = -1e9
   last_fix = last_match = last_write = last_trace = -1e9
   out: dict = {"t": round(time.time(), 1), "fix": False, "match": None}
   while True:
@@ -106,8 +108,13 @@ def main() -> None:
     cs = sm["carState"]
     if sm.updated["radarTracks"]:
       radar = geometry.radar_points(sm["radarTracks"], cs.vEgo)
+      radar_t = now
+    elif now - radar_t > RADAR_STALE_S:
+      radar = []
     try:
-      out["lane"] = runner.step(now, cs.vEgo, 1.0 / LOOP_HZ, out.get("match"), _model_inputs(sm["modelV2"]),
+      # a stale model frame (modeld behind) is passed as None so it is not counted twice
+      model = _model_inputs(sm["modelV2"]) if sm.updated["modelV2"] else None
+      out["lane"] = runner.step(now, cs.vEgo, 1.0 / LOOP_HZ, out.get("match"), model,
                                 {"left_blinker": cs.leftBlinker, "right_blinker": cs.rightBlinker}, radar)
     except Exception:
       cloudlog.exception("tavascan_map: lane filter failed")

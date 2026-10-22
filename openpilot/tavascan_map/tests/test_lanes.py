@@ -32,10 +32,12 @@ def test_diffusion_is_by_distance_not_time():
   assert abs(f.p[0] - 0.005) < 1e-6 and abs(f.p[2] - 0.005) < 1e-6
 
 
-def test_aborted_change_stays_mostly_on_original_lane():
-  # Review focus 4: an aborted change is never reported as a change at all
-  f = LaneFilter(); f.reset(3); f.p = [0.0, 1.0, 0.0]
-  assert f.output()["best"] == 1
+def test_steady_evidence_never_drives_a_lane_to_zero():
+  # a minute stopped with the same edge reading must leave the other lanes recoverable
+  f = LaneFilter(); f.reset(3)
+  for _ in range(6000):
+    f.observe({"left_edge_m": 1.9, "left_edge_prob": 0.9, "model_conf": 0.9})
+  assert min(f.p) > 1e-4 and f.output()["confidence"] < 0.999
 
 
 

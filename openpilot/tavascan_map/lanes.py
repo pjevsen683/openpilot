@@ -23,6 +23,10 @@ MODEL_CONF_FLOOR = 0.3   # below this the model's terms count for little
 EDGE_WEIGHT = 0.25
 OUTER_WEIGHT = 0.15
 RADAR_WEIGHT = 0.3
+# Mixed in after each observation so steady evidence cannot drive a lane to
+# zero: what we see can be wrong for a while, and a lane at exactly 0 could
+# never come back.
+FLOOR_MIX = 0.001
 
 
 def _soft(strength: float, yes: bool) -> float:
@@ -222,6 +226,7 @@ class LaneFilter:
         lik[outermost] *= 1.0 / (1.0 + RADAR_WEIGHT * 3)
     self.p = [x * l for x, l in zip(self.p, lik)]
     self._norm()
+    self.p = [(1.0 - FLOOR_MIX) * x + FLOOR_MIX / L for x in self.p]
 
   def output(self) -> dict:
     best = max(range(self.L), key=lambda i: self.p[i])

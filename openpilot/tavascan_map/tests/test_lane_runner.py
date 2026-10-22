@@ -1,4 +1,5 @@
 from openpilot.tavascan_map.lane_runner import LaneRunner
+from openpilot.tavascan_map.tests.test_lane_inputs import sweep
 
 MODEL = {"lc_state": "off", "lc_dir": "none", "lane_ys": [-5.1, -1.7, 1.7, 5.1],
          "lane_probs": [0.5, 0.9, 0.9, 0.5], "edge_ys": [-8.0, 8.0], "edge_stds": [0.5, 0.5]}
@@ -24,9 +25,13 @@ def test_layout_change_mid_lane_change_applies_both():
   r = LaneRunner()
   r.step(0.0, 15.0, 0.1, {"way": 1, "lanes": 2, "turn_lanes": None}, MODEL, CAR, [])
   r.f.p = [0.0, 1.0]
-  starting = dict(MODEL, lc_state="laneChangeStarting", lc_dir="left")
-  r.step(0.1, 15.0, 0.1, {"way": 1, "lanes": 2, "turn_lanes": None}, starting, CAR, [])
-  out = r.step(0.2, 15.0, 0.1, {"way": 2, "lanes": 3, "turn_lanes": "left|through|through"}, MODEL, CAR, [])
+  # a real change left, a whole lane across: lines drift right and relabel on the way
+  frames = sweep(-3.4)
+  for i, ys in enumerate(frames):
+    starting = dict(MODEL, lc_state="laneChangeStarting", lc_dir="left", lane_ys=ys)
+    r.step(0.1 * (i + 1), 15.0, 0.1, {"way": 1, "lanes": 2, "turn_lanes": None}, starting, CAR, [])
+  out = r.step(0.1 * (len(frames) + 1), 15.0, 0.1, {"way": 2, "lanes": 3, "turn_lanes": "left|through|through"},
+               dict(MODEL, lane_ys=frames[-1]), CAR, [])
   # old lane 1 -> new lane 2 (turn lane added left), then the change moves us to lane 1
   assert out["best"] == 1
 
@@ -63,3 +68,33 @@ def test_keeping_straight_onto_another_road_keeps_the_lane():
   r.f.p = [1.0, 0.0]
   r.step(0.1, 10.0, 0.1, {"way": 2, "lanes": 2, "turn_lanes": None, "class": "secondary", "ref": None, "name": "B", "heading": 15.0}, MODEL, CAR, [])
   assert r.f.p[0] > 0.9
+
+
+def test_model_lane_count_does_not_flap():
+  # Review focus 1: no lane count in the map; the model's outer line hovers around the threshold
+  r = LaneRunner()
+  m = {"way": 1, "lanes": None, "turn_lanes": None}
+  r.step(0.0, 15.0, 0.1, m, MODEL, CAR, [])
+  r.f.p = [0.9, 0.05, 0.05]
+  for i in range(20):
+    probs = [0.25 if i % 2 else 0.35, 0.9, 0.9, 0.5]
+    out = r.step(0.1 * (i + 1), 15.0, 0.1, m, dict(MODEL, lane_probs=probs), CAR, [])
+  assert out["of"] == 3
+
+
+def test_lane_count_from_model_before_any_map_match():
+  # Review focus 3: the first ticks come before modelV2 and GPS
+  r = LaneRunner()
+  r.step(0.0, 15.0, 0.1, None, None, CAR, [])
+  for i in range(30):
+    out = r.step(0.1 * (i + 1), 15.0, 0.1, None, MODEL, CAR, [])
+  assert out["of"] == 3
+
+
+def test_stale_model_is_not_observed_again():
+  r = LaneRunner()
+  r.step(0.0, 0.0, 0.1, {"way": 1, "lanes": 3, "turn_lanes": None}, MODEL, CAR, [])
+  p0 = list(r.f.p)
+  for i in range(100):
+    r.step(0.1 * (i + 1), 0.0, 0.1, {"way": 1, "lanes": 3, "turn_lanes": None}, None, CAR, [])
+  assert r.f.p == p0
