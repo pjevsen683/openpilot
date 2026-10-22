@@ -48,17 +48,28 @@ def turn_only(turns: str | None, L: int) -> list[int]:
   return out
 
 
-def _added_side(old_L, old_turns, new_L, new_turns) -> int:
-  """-1 / +1 when the arrows show where the extra lanes came in, else 0."""
-  n = turn_only(new_turns, new_L)
+def _added_left(old_L, new_L, new_turns) -> int | None:
+  """How many of the lanes gained came in on the left, when the arrows show it.
+
+  Turn-only lanes at the ends of the new layout are taken to be the new ones:
+  "left|none|none|right" after two lanes is one gained on each side. None
+  when the arrows do not account for the lanes gained.
+  """
   extra = new_L - old_L
   if extra <= 0 or not new_turns:
+    return None
+  n = turn_only(new_turns, new_L)
+  lead = next((i for i, x in enumerate(n) if x != -1), new_L)
+  trail = next((i for i, x in enumerate(reversed(n)) if x != 1), new_L)
+  if lead + trail < extra:
+    return None
+  if lead >= extra and trail == 0:
+    return extra
+  if trail >= extra and lead == 0:
     return 0
-  if all(x == -1 for x in n[:extra]) and not all(x == -1 for x in n[-extra:]):
-    return -1
-  if all(x == 1 for x in n[-extra:]) and not all(x == 1 for x in n[:extra]):
-    return 1
-  return 0
+  if lead + trail == extra:
+    return lead
+  return None
 
 
 def lane_map(old_L: int, old_turns: str | None, new_L: int, new_turns: str | None,
@@ -69,8 +80,21 @@ def lane_map(old_L: int, old_turns: str | None, new_L: int, new_turns: str | Non
     for i in range(old_L):
       M[i][i] = 1.0
     return M
-  side = _added_side(old_L, old_turns, new_L, new_turns) or side_hint
   d = new_L - old_L
+  left = _added_left(old_L, new_L, new_turns)
+  if left is not None:
+    for i in range(old_L):
+      M[i][i + left] = 1.0
+    return M
+  if d < 0:
+    # the same reading backwards: turn-only lanes at the ends of the old
+    # layout are the ones that end
+    lost_left = _added_left(new_L, old_L, old_turns)
+    if lost_left is not None:
+      for i in range(old_L):
+        M[i][min(new_L - 1, max(0, i - lost_left))] = 1.0
+      return M
+  side = side_hint
   for i in range(old_L):
     if d > 0:     # lanes added
       if side < 0:

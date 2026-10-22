@@ -116,3 +116,15 @@ def test_empty_observation_changes_nothing():
   f = LaneFilter(); f.reset(3); f.p = [0.2, 0.5, 0.3]
   f.observe({})
   assert f.p == [0.2, 0.5, 0.3]
+
+
+def test_turn_lanes_added_on_both_sides():
+  # 2 -> 4 with a left-turn lane on the left and a right-turn lane on the right
+  M = lane_map(2, None, 4, "left|none|none|right")
+  assert M[0][1] == 1.0 and M[1][2] == 1.0
+
+
+def test_turn_lanes_ending_on_both_sides():
+  # 4 -> 2 after the junction: the left-turn and right-turn lanes are the ones gone
+  M = lane_map(4, "left|none|none|right", 2, None)
+  assert M[1][0] == 1.0 and M[2][1] == 1.0
