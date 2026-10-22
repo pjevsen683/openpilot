@@ -20,6 +20,7 @@ from openpilot.common.swaglog import cloudlog
 
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 ASSETS_DIR = os.getenv("TAVASCAN_ASSETS", "/data/tavascan_assets")
+NEARBY_PATH = "/dev/shm/tavascan_nearby.json"
 CONTENT_TYPES = {".js": "text/javascript", ".glb": "model/gltf-binary", ".png": "image/png",
                  ".jpg": "image/jpeg", ".json": "application/json", ".css": "text/css"}
 BIND_RETRY_S = 2.0
@@ -61,6 +62,13 @@ def make_handler(page_path: str, snapshot, lock):
             self._send(200, f.read(), "text/html; charset=utf-8")
         except OSError:
           self._send(500, b"page missing", "text/plain")
+      elif self.path.startswith("/nearby.json"):
+        # every mapped road in view, from tavascan_map; fetched once a second
+        try:
+          with open(NEARBY_PATH, "rb") as f:
+            self._send(200, f.read(), "application/json")
+        except OSError:
+          self._send(200, b'{"ways": []}', "application/json")
       elif self.path.startswith("/static/") or self.path.startswith("/assets/"):
         self._file()
       else:

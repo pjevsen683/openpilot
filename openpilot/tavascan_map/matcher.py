@@ -30,6 +30,11 @@ STAY_BONUS = 8.0        # m, for the way we were on
 JOINED_BONUS = 4.0      # m, for a way joined to it
 MIN_HEADING_SPEED = 2.0  # m/s, below this the GPS bearing is noise
 AHEAD_M = 500.0
+# The view for nearby roads: this far ahead, behind and to each side of us.
+VIEW_AHEAD_M = 300.0
+VIEW_BEHIND_M = 60.0
+VIEW_SIDE_M = 150.0
+VIEW_STEP_M = 3.0      # points of a nearby road closer together than this are dropped
 BEHIND_M = 40.0
 PATH_STEP_M = 5.0
 POINT_ON_PATH_M = 12.0
@@ -218,6 +223,50 @@ class Map:
     return out + [(lat0, lon0, 0.0, info["lanes"], info["turn_lanes"])]
 
   # --- looking ahead -----------------------------------------------------------
+  def nearby(self, lat: float, lon: float, heading: float) -> dict:
+    """Every mapped road in view, as metres north/east of (lat, lon).
+
+    Not in the car frame: the page turns these into it at every redraw from
+    the latest fix, so a list made a second ago still lines up with the road.
+    """
+    b = math.radians(heading)
+    cb, sb = math.cos(b), math.sin(b)
+    kx = 111320.0 * math.cos(math.radians(lat))
+    # the view rectangle's corners, to bound the R*tree query
+    corners = [(a * cb - c * sb, a * sb + c * cb) for a in (-VIEW_BEHIND_M, VIEW_AHEAD_M)
+               for c in (-VIEW_SIDE_M, VIEW_SIDE_M)]
+    ns, es = [n for n, _ in corners], [e for _, e in corners]
+    ids = self.db.execute("SELECT id FROM way_rt WHERE maxlat>=? AND minlat<=? AND maxlon>=? AND minlon<=?",
+                          (lat + min(ns) / 111320.0, lat + max(ns) / 111320.0,
+                           lon + min(es) / kx, lon + max(es) / kx)).fetchall()
+    ways = []
+    for (wid,) in ids:
+      w = self.way(wid)
+      if w is None:
+        continue
+      pts, inside, last, prev_xy = [], False, None, None
+      in_view = lambda x, y: -VIEW_BEHIND_M <= x <= VIEW_AHEAD_M and abs(y) <= VIEW_SIDE_M
+      for k, (la, lo) in enumerate(zip(w.lat, w.lon)):
+        n, e = (la - lat) * 111320.0, (lo - lon) * kx
+        x, y = n * cb + e * sb, -n * sb + e * cb
+        if not inside:
+          inside = in_view(x, y)
+          if not inside and prev_xy is not None:
+            # a long segment can cross the view with both ends outside it
+            L = math.hypot(x - prev_xy[0], y - prev_xy[1])
+            steps = int(L // 20.0)
+            inside = any(in_view(prev_xy[0] + (x - prev_xy[0]) * i / steps, prev_xy[1] + (y - prev_xy[1]) * i / steps)
+                         for i in range(1, steps))
+        prev_xy = (x, y)
+        if last is None or k == len(w.lat) - 1 or math.hypot(n - last[0], e - last[1]) >= VIEW_STEP_M:
+          pts.append([round(n, 1), round(e, 1)])
+          last = (n, e)
+      if inside and len(pts) >= 2:
+        lanes = w.lanes or ((w.lanes_fwd or 0) + (w.lanes_bwd or 0)) or None
+        ways.append({"id": w.id, "class": w.hw, "lanes": lanes, "oneway": bool(w.oneway),
+                     "roundabout": w.junction in ("roundabout", "circular"), "pts": pts})
+    return {"lat0": round(lat, 7), "lon0": round(lon, 7), "ways": ways}
+
   def _ahead(self, seg: int, f: float) -> dict:
     path = []          # (lat, lon, distance from us)
     events = []

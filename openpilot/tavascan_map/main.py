@@ -30,6 +30,8 @@ from openpilot.tavascan_web import geometry
 
 MAP_PATH = os.getenv("TAVASCAN_MAP_PATH", "/data/tavascan_map/tavascan_map.sqlite")
 OUT_PATH = "/dev/shm/tavascan_map.json"
+NEARBY_PATH = "/dev/shm/tavascan_nearby.json"
+NEARBY_PERIOD_S = 1.0
 TRACE_PATH = os.getenv("TAVASCAN_MAP_TRACE", "/data/tavascan_map.jsonl")
 TRACE_MAX_BYTES = 8 * 1024 * 1024
 TRACE_PERIOD_S = 2.0
@@ -74,7 +76,7 @@ def main() -> None:
   runner = LaneRunner()
   radar: list = []
   radar_t = -1e9
-  last_fix = last_match = last_write = last_trace = -1e9
+  last_fix = last_match = last_write = last_trace = last_nearby = -1e9
   out: dict = {"t": round(time.time(), 1), "fix": False, "match": None}
   while True:
     rk.keep_time()
@@ -97,9 +99,16 @@ def main() -> None:
       except Exception:
         cloudlog.exception("tavascan_map: match failed")
         st = None
-      out = {"fix": True, "lat": round(g.latitude, 6), "lon": round(g.longitude, 6),
+      out = {"fix": True, "lat": round(g.latitude, 7), "lon": round(g.longitude, 7),
              "bearing": round(g.bearingDeg), "speed_kph": round(g.speed * 3.6, 1),
              "accuracy_m": round(g.horizontalAccuracy, 1), "match": st}
+      if now - last_nearby >= NEARBY_PERIOD_S:
+        last_nearby = now
+        try:
+          heading = st.get("heading") if st and st.get("heading") is not None else g.bearingDeg
+          _write_atomic(NEARBY_PATH, m.nearby(g.latitude, g.longitude, heading))
+        except Exception:
+          cloudlog.exception("tavascan_map: nearby failed")
     elif now - last_fix > STALE_FIX_S:
       out = {"fix": False, "match": None}
 
