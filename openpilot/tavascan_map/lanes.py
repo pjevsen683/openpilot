@@ -15,6 +15,18 @@ DIFFUSE_PER_M = 0.005 / 15.0
 TURN_ONLY_FACTOR = 0.1
 TURN_SIGNALLED_FACTOR = 3.0
 INDICATOR_MEMORY_S = 10.0
+LANE_W = 3.4
+EDGE_NEAR_M = 2.5
+MODEL_CONF_FLOOR = 0.3   # below this the model's terms count for little
+# Per-tick likelihood strengths; at 10 Hz a steady observation takes about a
+# second to dominate a uniform prior.
+EDGE_WEIGHT = 0.25
+OUTER_WEIGHT = 0.15
+RADAR_WEIGHT = 0.3
+
+
+def _soft(strength: float, yes: bool) -> float:
+  return 1.0 + strength if yes else 1.0 / (1.0 + strength)
 
 
 def turn_only(turns: str | None, L: int) -> list[int]:
@@ -144,6 +156,47 @@ class LaneFilter:
         continue
       since = seconds_since_left if k < 0 else seconds_since_right
       self.p[i] *= TURN_SIGNALLED_FACTOR if since <= INDICATOR_MEMORY_S else TURN_ONLY_FACTOR
+    self._norm()
+
+  def observe(self, obs: dict) -> None:
+    """Weigh the lanes by what the model and radar see this tick.
+
+    obs keys, all optional: left_edge_m/right_edge_m (distance to the road
+    edge), left_edge_prob/right_edge_prob, outer_left_prob/outer_right_prob
+    (the model's outer lane lines), car_left/car_right (a vehicle beside us
+    going our way), model_conf (our own lane lines' probability).
+    """
+    L = self.L
+    if L < 2 or not obs:
+      return
+    conf = obs.get("model_conf")
+    k_model = 1.0 if conf is None else min(1.0, max(0.0, (conf - 0.1) / (MODEL_CONF_FLOOR + 0.3)))
+    lik = [1.0] * L
+    for side, edge_key, prob_key in ((-1, "left_edge_m", "left_edge_prob"), (1, "right_edge_m", "right_edge_prob")):
+      d, pr = obs.get(edge_key), obs.get(prob_key)
+      if d is None or pr is None:
+        continue
+      n = max(0.0, (d - LANE_W / 2) / LANE_W)    # lanes between us and that edge
+      s = EDGE_WEIGHT * pr * k_model
+      for i in range(L):
+        lanes_to_edge = i if side < 0 else L - 1 - i
+        if d <= EDGE_NEAR_M:
+          lik[i] *= _soft(s, lanes_to_edge == 0)
+        else:
+          lik[i] *= 1.0 + s * max(0.0, 1.0 - abs(lanes_to_edge - n))
+    for side, key in ((-1, "outer_left_prob"), (1, "outer_right_prob")):
+      pr = obs.get(key)
+      if pr is None:
+        continue
+      s = OUTER_WEIGHT * k_model * max(0.0, pr - 0.3) / 0.7
+      outermost = 0 if side < 0 else L - 1
+      for i in range(L):
+        lik[i] *= _soft(s, i != outermost)
+    for side, key in ((-1, "car_left"), (1, "car_right")):
+      if obs.get(key):
+        outermost = 0 if side < 0 else L - 1
+        lik[outermost] *= 1.0 / (1.0 + RADAR_WEIGHT * 3)
+    self.p = [x * l for x, l in zip(self.p, lik)]
     self._norm()
 
   def output(self) -> dict:
