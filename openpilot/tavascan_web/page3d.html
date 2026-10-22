@@ -74,6 +74,7 @@
 <script type="module">
 import * as THREE from "three";
 import { GLTFLoader } from "/static/three/loaders/GLTFLoader.js";
+import { mergeGeometries } from "/static/three/utils/BufferGeometryUtils.js";
 
 // ---- frames ------------------------------------------------------------------
 // Data arrives in the car frame: x metres AHEAD, y metres to the RIGHT, origin
@@ -109,8 +110,8 @@ sun.position.set(-40, 80, 30);
 scene.add(sun);
 
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(3000, 3000),
-                              new THREE.MeshStandardMaterial({ color: "#13161a", roughness: 1 }));
-ground.rotation.x = -Math.PI / 2; ground.position.y = -0.02;
+                              new THREE.MeshStandardMaterial({ color: "#101215", roughness: 1 }));
+ground.rotation.x = -Math.PI / 2; ground.position.y = -0.25;   // well below the roads: at a shallow angle millimetres z-fight
 scene.add(ground);
 
 const CAMS = [
@@ -120,6 +121,7 @@ const CAMS = [
 ];
 let camIdx = 0;
 try { camIdx = Math.min(CAMS.length - 1, Math.max(0, +localStorage.getItem("cam3d") || 0)); } catch (e) {}
+if (new URLSearchParams(location.search).has("cam")) camIdx = +new URLSearchParams(location.search).get("cam") || 0;
 function setCam() {
   const c = CAMS[camIdx];
   camera.position.copy(c.pos);
@@ -153,9 +155,11 @@ window.addEventListener("resize", resize); resize();
 
 // ---- materials and textures ---------------------------------------------------
 const M = {
-  asphalt: new THREE.MeshStandardMaterial({ color: "#2b2f35", roughness: 0.95 }),
+  asphalt: new THREE.MeshStandardMaterial({ color: "#353940", roughness: 0.95 }),
   ourLane: new THREE.MeshBasicMaterial({ color: "#5b8fd6", transparent: true, opacity: 0.10, depthWrite: false }),
   asphaltOpp: new THREE.MeshStandardMaterial({ color: "#23262b", roughness: 0.95 }),
+  side: new THREE.MeshStandardMaterial({ color: "#2e3238", roughness: 0.95 }),
+  sideEdge: new THREE.MeshBasicMaterial({ color: "#737a83" }),
   paint: new THREE.MeshBasicMaterial({ color: "#d9dde3" }),
   paintDim: new THREE.MeshBasicMaterial({ color: "#8d939b" }),
   model: new THREE.MeshBasicMaterial({ color: "#eef3f8" }),
@@ -339,7 +343,53 @@ function dispose(o) {
   o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && !Object.values(M).includes(c.material)) c.material.dispose(); });
 }
 
-function buildRoad(mm, lanePos, modelReach, modelHeading, dLane) {
+// Every other mapped road in view (tavascan_map nearby, fetched once a second),
+// drawn as plain asphalt under our own road. Widths by class: lane width and
+// the lane count to assume when the map has none.
+const ROAD_W = { motorway: [3.5, 2], trunk: [3.4, 2], primary: [3.3, 2], secondary: [3.2, 2], tertiary: [3.1, 2],
+                 motorway_link: [3.5, 1], trunk_link: [3.4, 1], primary_link: [3.3, 1], secondary_link: [3.2, 1],
+                 tertiary_link: [3.1, 1], residential: [2.8, 2], unclassified: [2.8, 2], living_street: [2.5, 2],
+                 service: [3.2, 1], road: [3.0, 2] };
+function roadWidth(w) {
+  const [lw, n] = ROAD_W[w.class] || [3.0, 2];
+  return lw * (w.lanes || (w.oneway ? Math.max(1, n - 1) : n));
+}
+
+// Nearby roads in the frame of the road path: metres ahead/right of the fix
+// the path was made from, turned by the same heading.
+function nearbyMeshes(near, fix, heading) {
+  if (!near || !near.ways || !near.ways.length || !fix || fix.lat === undefined || heading === null || heading === undefined) return [];
+  const b = heading * Math.PI / 180, cb = Math.cos(b), sb = Math.sin(b);
+  const kx = 111320 * Math.cos(fix.lat * Math.PI / 180);
+  const dn0 = (near.lat0 - fix.lat) * 111320, de0 = (near.lon0 - fix.lon) * kx;
+  const asphalt = [], edges = [];
+  for (const w of near.ways) {
+    let s = 0, prev = null;
+    const pts = w.pts.map(([n, e]) => {
+      const dn = dn0 + n, de = de0 + e, x = dn * cb + de * sb, y = -dn * sb + de * cb;
+      if (prev) s += Math.hypot(x - prev[0], y - prev[1]);
+      prev = [x, y];
+      return [x, y, 0, -1, s];
+    });
+    if (pts.length < 2 || s < 1) continue;
+    const tr = track(pts), half = roadWidth(w) / 2;
+    const m = band(tr, 0, s, () => -half, () => half, M.side, -0.012, 2);
+    if (m) asphalt.push(m.geometry);
+    if (w.class !== "service") {
+      for (const off of [-half, half]) {
+        const e = band(tr, 0, s, () => off - 0.1, () => off + 0.1, M.sideEdge, -0.008, 2);
+        if (e) edges.push(e.geometry);
+      }
+    }
+  }
+  const out = [];
+  if (asphalt.length) out.push(new THREE.Mesh(mergeGeometries(asphalt), M.side));
+  if (edges.length) out.push(new THREE.Mesh(mergeGeometries(edges), M.sideEdge));
+  [...asphalt, ...edges].forEach(g => g.dispose());
+  return out;
+}
+
+function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix) {
   if (roadGroup) { flow.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
   if (!mm || !mm.path || !mm.path.pts || mm.path.pts.length < 2) return;
   const pts = mm.path.pts, turns = mm.path.turns || [];
@@ -369,6 +419,7 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane) {
   grp.position.y = 0;
 
   const s0 = Math.max(tr.s0, -40), s1 = tr.s1;
+  for (const m of nearbyMeshes(near, fix, mm.heading)) grp.add(m);
   const ours = band(tr, s0, s1, leftEdge, rightEdge, M.asphalt, 0.0);
   if (ours) grp.add(ours);
   // our own lane, faintly, as far as we can trust which lane it is
@@ -687,13 +738,22 @@ async function tick() {
     last = d;
     hud(d);
     const mdl = buildModel(d.scene || {});
-    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading, d.map && d.map.lane);
+    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading, d.map && d.map.lane, nearby, d.map);
     flowSpeed = Math.max(0, (d.v_ego_kph || 0) / 3.6); flowFrom = performance.now(); flow.position.z = 0;
     updateOthers(d);
     window.__frames = (window.__frames || 0) + 1;
   } catch (e) { /* off wifi; keep the last frame */ }
 }
 setInterval(tick, 400); tick();
+
+let nearby = null;
+async function tickNearby() {
+  try {
+    const q = new URLSearchParams(location.search).get("f");
+    nearby = await (await fetch("/nearby.json" + (q ? "?f=" + q : ""), { cache: "no-store" })).json();
+  } catch (e) { /* keep the last one */ }
+}
+setInterval(tickNearby, 1000); tickNearby();
 
 function frame() {
   // at most 1 s of dead reckoning, in case data stops
