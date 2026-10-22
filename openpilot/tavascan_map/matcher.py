@@ -171,6 +171,7 @@ class Map:
   def _state(self, lat, lon, dist, seg, f) -> dict:
     out = self.cur.summary(self.dir)
     out["offset_m"] = round(dist, 1)
+    out["heading"] = round(self._heading, 1) if self._heading is not None else None
     ahead = self._ahead(seg, f)
     path = ahead.pop("_path")
     out["ahead"] = ahead

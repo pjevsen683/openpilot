@@ -66,6 +66,7 @@
   <div class="chip" id="cl"><u>left lane</u>–</div>
   <div class="spacer"></div>
   <span class="note" id="note"></span>
+  <button class="btn" id="lay">lines</button>
   <button class="btn" id="cam">camera</button>
   <a class="btn" href="/">2D</a>
 </div>
@@ -131,6 +132,17 @@ document.getElementById("cam").onclick = () => {
   try { localStorage.setItem("cam3d", camIdx); } catch (e) {}
 };
 setCam();
+
+// The model's own lane lines: an optional layer over the map, off by default.
+// They still turn the map onto the model's heading when hidden.
+let showModel = false;
+try { showModel = localStorage.getItem("lines3d") === "1"; } catch (e) {}
+const layBtn = document.getElementById("lay");
+layBtn.style.opacity = showModel ? 1 : 0.5;
+layBtn.onclick = () => {
+  showModel = !showModel; layBtn.style.opacity = showModel ? 1 : 0.5;
+  try { localStorage.setItem("lines3d", showModel ? "1" : "0"); } catch (e) {}
+};
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -327,7 +339,7 @@ function dispose(o) {
   o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && !Object.values(M).includes(c.material)) c.material.dispose(); });
 }
 
-function buildRoad(mm, lanePos, modelReach, modelHeading) {
+function buildRoad(mm, lanePos, modelReach, modelHeading, dLane) {
   if (roadGroup) { flow.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
   if (!mm || !mm.path || !mm.path.pts || mm.path.pts.length < 2) return;
   const pts = mm.path.pts, turns = mm.path.turns || [];
@@ -346,8 +358,10 @@ function buildRoad(mm, lanePos, modelReach, modelHeading) {
 
   // Which lane are we in: the model says rightmost or leftmost; otherwise the
   // middle one. Shift the whole road so that lane is under us.
-  let idx = (L0 - 1) / 2;
-  if (lanePos && L0 > 1) { if (lanePos.rightmost) idx = L0 - 1; else if (lanePos.leftmost) idx = 0; else idx = Math.floor((L0 - 1) / 2); }
+  // Which lane are we in: the lane tracker's most probable lane (tavascan_map
+  // lanes.py); without its output, the middle one.
+  const lane = dLane && dLane.of === L0 ? dLane : null;
+  const idx = lane ? lane.best : Math.floor((L0 - 1) / 2);
   const p0 = tr.at(0);
   const laneCentre = leftEdge(0) + (idx + 0.5) * LANE_W;
   const cx = p0.x + -p0.fy * laneCentre, cy = p0.y + p0.fx * laneCentre;
@@ -358,6 +372,7 @@ function buildRoad(mm, lanePos, modelReach, modelHeading) {
   const ours = band(tr, s0, s1, leftEdge, rightEdge, M.asphalt, 0.0);
   if (ours) grp.add(ours);
   // our own lane, faintly, as far as we can trust which lane it is
+  M.ourLane.opacity = 0.05 + 0.15 * (lane ? lane.confidence : 0);
   const mine = band(tr, Math.max(s0, -8), Math.min(s1, 60), s => leftEdge(s) + idx * LANE_W + 0.25,
                     s => leftEdge(s) + (idx + 1) * LANE_W - 0.25, M.ourLane, 0.012);
   if (mine) grp.add(mine);
@@ -368,7 +383,7 @@ function buildRoad(mm, lanePos, modelReach, modelHeading) {
 
   // Markings. Close in, the model's own lines are drawn instead (they are
   // where the paint really is); the map's take over beyond them.
-  const mk = Math.max(s0, modelReach);
+  const mk = showModel ? Math.max(s0, modelReach) : s0;
   const edgeL = band(tr, mk, s1, s => leftEdge(s) - 0.07, s => leftEdge(s) + 0.07, twoWay ? M.paintDim : M.paint, 0.02);
   const edgeR = band(tr, mk, s1, s => rightEdge(s) - 0.07, s => rightEdge(s) + 0.07, M.paint, 0.02);
   if (edgeL && !twoWay) grp.add(edgeL);
@@ -482,6 +497,7 @@ function buildModel(sc) {
     reach = Math.max(reach, l.points[l.points.length - 1][0]);
   });
   (sc.road_edges || []).forEach(e => e && strip(e.points, 0.12, M.edge));
+  grp.visible = showModel;
   modelGroup = grp; flow.add(grp);
   // Our lane's direction 20-50 m ahead, from the nearest confident line.
   let heading = null, best = 1e9;
@@ -595,7 +611,9 @@ function updateOthers(d) {
     seen.add(p.id);
     let o = others.get(p.id);
     if (!o) { o = { obj: makeOther(), fresh: true }; others.set(p.id, o); }
-    o.target = P(p.d + CAR_L / 2, p.y);
+    // drawn in lanes: snapped most of the way to the lane centre their offset falls in
+    const laneOff = Math.round(p.y / LANE_W);
+    o.target = P(p.d + CAR_L / 2, laneOff * LANE_W + 0.35 * (p.y - laneOff * LANE_W));
     if (o.fresh) { o.obj.position.copy(o.target); o.fresh = false; }
     const ring = o.obj.getObjectByName("ring").material;
     if (p.id === target) { ring.color.set("#ff9c3a"); ring.opacity = 0.9; }
@@ -638,6 +656,9 @@ function hud(d) {
     $("rinfo").textContent = [mm.class.replace("_", " "), mm.lanes ? mm.lanes + " lane" + (mm.lanes > 1 ? "s" : "") : null,
                               mm.turn_lanes ? turnWords(mm.turn_lanes) : null, mm.oneway ? "one-way" : null,
                               mm.roundabout ? "roundabout" : null].filter(Boolean).join(" · ");
+    // first, so a narrow screen cuts the road details rather than the lane
+    const ln = map.lane;
+    if (ln && ln.of > 1) $("rinfo").textContent = `lane ${ln.best + 1} of ${ln.of} · ${Math.round(100 * ln.confidence)} % · ` + $("rinfo").textContent;
   }
   // Events at 0 m are the road we are already on (a sign at the start of our way).
   const ev = (mm && mm.ahead && mm.ahead.events || []).filter(e => e.kind !== "class" && e.at_m >= 3).slice(0, 6);
@@ -666,7 +687,7 @@ async function tick() {
     last = d;
     hud(d);
     const mdl = buildModel(d.scene || {});
-    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading);
+    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading, d.map && d.map.lane);
     flowSpeed = Math.max(0, (d.v_ego_kph || 0) / 3.6); flowFrom = performance.now(); flow.position.z = 0;
     updateOthers(d);
     window.__frames = (window.__frames || 0) + 1;
