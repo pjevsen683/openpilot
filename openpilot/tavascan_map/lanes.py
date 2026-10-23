@@ -16,7 +16,11 @@ TURN_ONLY_FACTOR = 0.1
 TURN_SIGNALLED_FACTOR = 3.0
 INDICATOR_MEMORY_S = 10.0
 LANE_W = 3.4
-EDGE_NEAR_M = 2.5
+# An edge closer than our half lane plus a whole lane has no lane between us
+# and it, however wide the shoulder: on the E45 the right edge sits ~4 m out
+# in the right lane, past a 2 m hard shoulder.
+EDGE_NEAR_M = LANE_W / 2 + LANE_W - 0.1
+SHOULDER_M = 1.5          # typical shoulder beyond the outer line, when counting lanes to a far edge
 MODEL_CONF_FLOOR = 0.3   # below this the model's terms count for little
 # Per-tick likelihood strengths; at 10 Hz a steady observation takes about a
 # second to dominate a uniform prior.
@@ -206,7 +210,7 @@ class LaneFilter:
       d, pr = obs.get(edge_key), obs.get(prob_key)
       if d is None or pr is None:
         continue
-      n = max(0.0, (d - LANE_W / 2) / LANE_W)    # lanes between us and that edge
+      n = max(0.0, (d - LANE_W / 2 - SHOULDER_M) / LANE_W)    # lanes between us and that edge
       s = EDGE_WEIGHT * pr * k_model
       for i in range(L):
         lanes_to_edge = i if side < 0 else L - 1 - i

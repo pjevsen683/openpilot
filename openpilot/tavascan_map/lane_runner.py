@@ -110,8 +110,11 @@ class LaneRunner:
       if ev:
         self.f.lane_change(ev[0], why=ev[1])
         self._left = None        # the lane we had on the way we left no longer holds
-      self.f.observe(observation(model.get("lane_ys") or [], model.get("lane_probs") or [],
-                                 model.get("edge_ys") or [], model.get("edge_stds") or [], radar))
+      # Mid-change the model already shows the lane we are moving into; seen
+      # then and counted again when the change completes, it moved us two lanes.
+      if not self.watch.changing:
+        self.f.observe(observation(model.get("lane_ys") or [], model.get("lane_probs") or [],
+                                   model.get("edge_ys") or [], model.get("edge_stds") or [], radar))
     out = self.f.output()
     out["source"] = self.source
     return out

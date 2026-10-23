@@ -124,3 +124,19 @@ def test_turning_back_onto_the_same_road_is_not_a_detour():
   r.step(0.1, 8.0, 0.1, b, None, CAR, [])
   out = r.step(5.0, 8.0, 0.1, dict(a, heading=190.0), None, CAR, [])
   assert out["confidence"] < 0.8
+
+
+def test_what_the_model_sees_mid_change_is_not_counted_on_top_of_the_change():
+  # 2026-10-22: from the left lane, the model showed the middle lane's picture
+  # before the change counted; the change then moved us on into the right lane
+  mw = {"way": 1, "lanes": 3, "turn_lanes": None, "class": "motorway", "ref": "E 45", "name": "A", "heading": 10.0}
+  r = LaneRunner()
+  r.step(0.0, 33.0, 0.1, mw, None, CAR, [])
+  r.f.p = [1.0, 0.0, 0.0]
+  middle = dict(MODEL, lane_probs=[0.9, 0.99, 0.99, 0.8], edge_ys=[-6.3, 9.0], edge_stds=[0.6, 1.0])
+  t = 0.1
+  for ys in sweep(3.4, n=30):
+    out = r.step(t, 33.0, 0.1, mw, dict(middle, lc_state="laneChangeStarting", lc_dir="right", lane_ys=ys), CAR, []); t += 0.1
+  for _ in range(5):
+    out = r.step(t, 33.0, 0.1, mw, dict(middle, lane_ys=sweep(3.4, n=30)[-1]), CAR, []); t += 0.1
+  assert out["best"] == 1 and out["p"][2] < 0.3
