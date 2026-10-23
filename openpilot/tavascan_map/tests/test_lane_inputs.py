@@ -112,3 +112,54 @@ def test_turning_at_a_junction_is_not_a_driver_change():
   w = LaneChangeWatch()
   for i, ys in enumerate(LEFT_CHANGE):
     assert w.update("off", "none", True, False, ys, 0.1 * i, v_ego=7.0, lane_probs=[0.5, 0.9, 0.9, 0.5]) is None
+
+
+def test_lines_moved_is_not_biased_by_noise():
+  # four lines, two moving a little left and two a little right: no movement.
+  # Taking the upper of the two middle values read +0.05 m every frame, which
+  # over a lane change ate most of a change to the right (2026-10-23, E45).
+  from openpilot.tavascan_map.lane_inputs import lines_moved
+  assert abs(lines_moved([-5.1, -1.7, 1.7, 5.1], [-5.2, -1.75, 1.75, 5.2])) < 1e-9
+
+
+def test_slow_noisy_openpilot_change_right_counts():
+  # a change right over 5 s at 10 Hz, the lines jittering a few cm each frame
+  w = LaneChangeWatch()
+  frames = sweep(3.4, n=50)
+  jitter = [(-0.06, -0.03, 0.03, 0.06), (0.06, 0.03, -0.03, -0.06)]
+  noisy = [[y + j for y, j in zip(ys, jitter[i % 2])] for i, ys in enumerate(frames)]
+  evs = run_watch(w, noisy, lc_state="laneChangeStarting", lc_dir="right", right=True)
+  evs += run_watch(w, [frames[-1]] * 3, lc_state="off", t0=5.1)
+  assert evs == [(1, "openpilot lane change right")]
+
+
+def _recorded(w, rows, lc_dir):
+  evs = []
+  for i, (st, ys) in enumerate(rows):
+    ev = w.update(st, lc_dir if st == "laneChangeStarting" else "none", lc_dir == "left", lc_dir == "right",
+                  ys, 0.1 * i, v_ego=30.0, lane_probs=[0.5, 0.9, 0.9, 0.5])
+    if ev:
+      evs.append(ev)
+  return evs
+
+
+def test_recorded_e45_change_right_counts():
+  from openpilot.tavascan_map.tests.recorded_changes import RIGHT_E45
+  assert _recorded(LaneChangeWatch(), RIGHT_E45, "right") == [(1, "openpilot lane change right")]
+
+
+def test_recorded_e45_change_left_counts():
+  from openpilot.tavascan_map.tests.recorded_changes import LEFT_E45
+  assert _recorded(LaneChangeWatch(), LEFT_E45, "left") == [(-1, "openpilot lane change left")]
+
+
+def test_recorded_change_through_a_blended_relabel_counts():
+  from openpilot.tavascan_map.tests.recorded_changes import LEFT_E45_BLEND
+  assert _recorded(LaneChangeWatch(), LEFT_E45_BLEND, "left") == [(-1, "openpilot lane change left")]
+
+
+def test_driver_change_through_a_blended_relabel_counts():
+  # the same recording as a driver change: indicator on, openpilot not changing
+  from openpilot.tavascan_map.tests.recorded_changes import LEFT_E45_BLEND
+  rows = [("off", ys) for _, ys in LEFT_E45_BLEND]
+  assert _recorded(LaneChangeWatch(), rows, "left") == [(-1, "driver lane change left")]

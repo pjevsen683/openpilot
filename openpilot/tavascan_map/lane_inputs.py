@@ -13,6 +13,10 @@ MIN_SPEED = 5.0             # m/s; below this the lines jump about
 DRIVER_MIN_SPEED = 10.0     # m/s; turning at a junction with the indicator on is not a lane change
 DRIVER_MIN_PROB = 0.3       # our own two lines must be this confident
 DRIVER_CHANGE_BLINK_S = 3.0  # indicator on this recently counts for a crossing
+# The car moves across its lane at most ~1.5 m/s, 0.15 m a frame at 10 Hz. A
+# bigger step is the model relabelling its lines, which it may blend over a few
+# frames (-0.5, -1.0, -1.2 m on the E45, 2026-10-22); it is not movement.
+MAX_STEP_M = 0.4
 
 
 def observation(lane_ys, lane_probs, edge_ys, edge_stds, radar) -> dict:
@@ -55,7 +59,10 @@ def lines_moved(prev, ys) -> float:
   if not d:
     return 0.0
   d.sort()
-  return d[len(d) // 2]
+  n = len(d)
+  # a true median: with an even count, the upper middle value alone biases every
+  # frame to the right, and the bias adds up over a lane change
+  return d[n // 2] if n % 2 else (d[n // 2 - 1] + d[n // 2]) / 2
 
 
 class LaneChangeWatch:
@@ -70,11 +77,30 @@ class LaneChangeWatch:
 
   def __init__(self):
     self._op = None              # direction of an openpilot change in progress
-    self._op_moved = 0.0         # lines' sideways movement since it started
+    self._op_line = None         # the line on that side, followed frame by frame
+    self._op_moved = 0.0         # how far that line moved since the change started
     self._op_end = None          # when laneChangeStarting ended, for the tail
     self._moved = 0.0            # since the last driver change or quiet spell
     self._last_blink = {-1: -1e9, 1: -1e9}
     self._prev_ys = None
+
+  def _follow_op_line(self, ys) -> None:
+    # Following the one line we cross, by nearest match each frame, measured
+    # completed changes at 3-3.5 m and aborted ones near 0 on 110 recorded
+    # changes; the summed median of all four lines spread out between the two.
+    if ys is None or self._op_line is None:
+      return
+    nearest = min(ys, key=lambda q: abs(q - self._op_line))
+    if abs(nearest - self._op_line) <= MAX_STEP_M:
+      self._op_moved += nearest - self._op_line
+    # a bigger step is a relabel: follow on from that line, counting nothing;
+    # all the lines move together, so any one of them measures our movement
+    self._op_line = nearest
+
+  @property
+  def changing(self) -> bool:
+    """An openpilot lane change in progress that has not counted yet."""
+    return self._op is not None
 
   def seconds_since(self, side: int, t: float) -> float:
     """Seconds since the indicator on that side (-1 left, +1 right) was last on."""
@@ -96,14 +122,14 @@ class LaneChangeWatch:
 
     if lc_state == "laneChangeStarting" and lc_dir in ("left", "right"):
       d = -1 if lc_dir == "left" else 1
-      if self._op != d:
-        self._op, self._op_moved = d, 0.0
-      self._op_moved += step
+      if self._op != d and ys is not None:
+        self._op, self._op_line, self._op_moved = d, ys[1] if d < 0 else ys[2], 0.0
+      self._follow_op_line(ys)
       self._op_end = None
       self._moved = 0.0
       return None
     if self._op is not None:
-      self._op_moved += step
+      self._follow_op_line(ys)
       if self._op_end is None:
         self._op_end = t
       # lines move right (+) when we move left

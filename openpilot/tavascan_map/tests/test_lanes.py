@@ -139,3 +139,20 @@ def test_many_lanes_gained_lands_in_the_through_lanes():
   f.relayout(5, "left|left|none|none|right")
   f.turn_lanes_without_indicating(seconds_since_left=999, seconds_since_right=999)
   assert f.p[2] + f.p[3] > 0.8
+
+
+def test_edge_beyond_a_hard_shoulder_still_means_outermost():
+  # right lane of the E45, 2026-10-23: the edge ~4 m out past a 2 m shoulder.
+  # Closer than our half lane plus a whole lane (5.1 m), no lane fits between.
+  f = LaneFilter(); f.reset(3)
+  for _ in range(30):
+    f.observe({"right_edge_m": 4.0, "right_edge_prob": 0.6, "outer_right_prob": 0.0, "model_conf": 0.99})
+  assert f.output()["best"] == 2
+
+
+def test_edge_one_lane_and_a_shoulder_away_means_one_lane_beside_us():
+  # middle lane of the E45: the left edge ~6.3 m out (one lane and a 1.2 m shoulder)
+  f = LaneFilter(); f.reset(3)
+  for _ in range(30):
+    f.observe({"left_edge_m": 6.3, "left_edge_prob": 0.45, "model_conf": 0.99})
+  assert f.output()["best"] == 1
