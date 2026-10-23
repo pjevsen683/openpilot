@@ -130,3 +130,12 @@ def test_turn_lanes_ending_on_both_sides():
   # 4 -> 2 after the junction: the left-turn and right-turn lanes are the ones gone
   M = lane_map(4, "left|none|none|right", 2, None)
   assert M[1][0] == 1.0 and M[2][1] == 1.0
+
+
+def test_many_lanes_gained_lands_in_the_through_lanes():
+  # one lane opening into left|left|none|none|right: the arrows explain only three
+  # of the four lanes gained, and we are not in a turn lane unless we indicated
+  f = LaneFilter(); f.reset(1); f.turns = None
+  f.relayout(5, "left|left|none|none|right")
+  f.turn_lanes_without_indicating(seconds_since_left=999, seconds_since_right=999)
+  assert f.p[2] + f.p[3] > 0.8
