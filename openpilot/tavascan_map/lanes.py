@@ -106,8 +106,10 @@ def lane_map(old_L: int, old_turns: str | None, new_L: int, new_turns: str | Non
       elif side > 0:
         M[i][i] = 1.0
       else:
-        M[i][i] += 0.5
-        M[i][i + d] += 0.5
+        # unknown side: anywhere from all new lanes on the right to all on
+        # the left, evenly; turn arrows then weigh the turn lanes down
+        for j in range(i, i + d + 1):
+          M[i][j] += 1.0 / (d + 1)
     else:         # lanes lost: those beyond the new count merge into the nearest
       if side < 0:
         M[i][max(0, i + d)] = 1.0

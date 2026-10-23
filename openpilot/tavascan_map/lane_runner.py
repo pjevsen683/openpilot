@@ -7,6 +7,9 @@ MODEL_L_HOLD_S = 2.0   # the model's lane count must hold this long before it is
 MOTORWAY = {"motorway", "trunk"}
 TURN_DEG = 45.0       # a change of road with this much change of heading is a turn
 TURN_WINDOW_S = 6.0   # ... compared with our heading this long ago
+# Back on the way we left within this long: the match strayed (GPS drift onto a
+# ramp beside us) and the lane we had there still holds.
+DETOUR_S = 15.0
 
 
 def _side_hint(old_road, new_road, old_L, new_L) -> int:
@@ -29,6 +32,7 @@ class LaneRunner:
     self._headings: list = []    # (t, heading) over the last TURN_WINDOW_S
     self._model_L = None         # the model's lane count, once it has held
     self._model_cand = (None, 0.0)
+    self._left = None            # (layout, p, t, heading) of the way we last left
     self.source = "none"         # where L came from: "map", "model" or "none"
 
   def _model_lanes(self, model, t) -> int | None:
@@ -47,6 +51,13 @@ class LaneRunner:
         self._model_L, self._model_cand = n, (None, t)
     return self._model_L
 
+  def _is_detour_back(self, layout, t, heading) -> bool:
+    if self._left is None or self._left[0] != layout or t - self._left[2] > DETOUR_S:
+      return False
+    # the same way the other way round (a U-turn) has its lanes mirrored
+    before = self._left[3]
+    return heading is None or before is None or abs((heading - before + 180.0) % 360.0 - 180.0) <= TURN_DEG
+
   def step(self, t, v_ego, dt, match, model, car, radar) -> dict:
     # 1. layout: from the map when matched; the model's count where the map has
     # none, or before any match; after a match is lost, what we had
@@ -62,7 +73,12 @@ class LaneRunner:
     if self._layout is None:
       self.f.reset(layout[1])
       self.f.turns = layout[2]
+    elif layout != self._layout and self._is_detour_back(layout, t, (match or {}).get("heading")):
+      self.f.L, self.f.p, self.f.turns = layout[1], list(self._left[1]), layout[2]
+      self.f.why = "back on the road we left"
+      self._left = None
     elif layout != self._layout:
+      self._left = (self._layout, list(self.f.p), t, self._headings[-1][1] if self._headings else None)
       road = (match.get("class"), match.get("ref"), match.get("name")) if match else self._road
       heading = match.get("heading") if match else None
       before = self._headings[0][1] if self._headings else None
@@ -93,6 +109,7 @@ class LaneRunner:
                              model.get("lane_ys") or [], t, v_ego, model.get("lane_probs"))
       if ev:
         self.f.lane_change(ev[0], why=ev[1])
+        self._left = None        # the lane we had on the way we left no longer holds
       self.f.observe(observation(model.get("lane_ys") or [], model.get("lane_probs") or [],
                                  model.get("edge_ys") or [], model.get("edge_stds") or [], radar))
     out = self.f.output()

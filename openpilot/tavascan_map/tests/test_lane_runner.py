@@ -98,3 +98,29 @@ def test_stale_model_is_not_observed_again():
   for i in range(100):
     r.step(0.1 * (i + 1), 0.0, 0.1, {"way": 1, "lanes": 3, "turn_lanes": None}, None, CAR, [])
   assert r.f.p == p0
+
+
+def test_brief_match_to_a_parallel_ramp_keeps_the_lane():
+  # GPS drifts onto an exit ramp beside the motorway for a few seconds and back
+  mw = {"way": 1, "lanes": 3, "turn_lanes": None, "class": "motorway", "ref": "E 45", "name": "A", "heading": 10.0}
+  ramp = {"way": 2, "lanes": 1, "turn_lanes": None, "class": "motorway_link", "ref": None, "name": None, "heading": 12.0}
+  r = LaneRunner()
+  r.step(0.0, 28.0, 0.1, mw, None, CAR, [])
+  r.f.p = [0.0, 1.0, 0.0]
+  t = 0.1
+  for _ in range(90):
+    r.step(t, 28.0, 0.1, ramp, None, CAR, []); t += 0.1
+  out = r.step(t, 28.0, 0.1, mw, None, CAR, [])
+  assert out["best"] == 1 and out["confidence"] > 0.8
+
+
+def test_turning_back_onto_the_same_road_is_not_a_detour():
+  # a U-turn: the same two-way way, but its lanes are now the other way round
+  a = {"way": 1, "lanes": 2, "turn_lanes": None, "class": "secondary", "ref": None, "name": "A", "heading": 10.0}
+  b = {"way": 2, "lanes": 1, "turn_lanes": None, "class": "tertiary", "ref": None, "name": "B", "heading": 100.0}
+  r = LaneRunner()
+  r.step(0.0, 8.0, 0.1, a, None, CAR, [])
+  r.f.p = [1.0, 0.0]
+  r.step(0.1, 8.0, 0.1, b, None, CAR, [])
+  out = r.step(5.0, 8.0, 0.1, dict(a, heading=190.0), None, CAR, [])
+  assert out["confidence"] < 0.8
