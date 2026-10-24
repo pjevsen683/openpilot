@@ -99,7 +99,10 @@ def main() -> None:
       except Exception:
         cloudlog.exception("tavascan_map: match failed")
         st = None
-      out = {"fix": True, "lat": round(g.latitude, 7), "lon": round(g.longitude, 7),
+      # When the fix was taken, on the wall clock: the 3D page moves the road on
+      # from there by our speed, so it must not be the time of writing.
+      fix_age = max(0.0, (time.clock_gettime_ns(time.CLOCK_BOOTTIME) - sm.logMonoTime[gps_service]) / 1e9)
+      out = {"fix": True, "fix_t": round(time.time() - fix_age, 3), "lat": round(g.latitude, 7), "lon": round(g.longitude, 7),
              "bearing": round(g.bearingDeg), "speed_kph": round(g.speed * 3.6, 1),
              "accuracy_m": round(g.horizontalAccuracy, 1), "match": st}
       if now - last_nearby >= NEARBY_PERIOD_S:
@@ -127,7 +130,7 @@ def main() -> None:
                                 {"left_blinker": cs.leftBlinker, "right_blinker": cs.rightBlinker}, radar)
     except Exception:
       cloudlog.exception("tavascan_map: lane filter failed")
-    out["t"] = round(time.time(), 1)
+    out["t"] = round(time.time(), 3)
 
     if now - last_write >= WRITE_PERIOD_S:
       last_write = now

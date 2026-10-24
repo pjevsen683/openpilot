@@ -126,7 +126,7 @@ def _collect() -> None:
 
     snap = {
       "ready": True,
-      "t": round(time.time(), 1),
+      "t": round(time.time(), 3),
       "v_ego_kph": round(v_ego * CV.MS_TO_KPH, 1),
       "v_cruise_kph": round(v_cruise_kph, 1) if 0 < v_cruise_kph < 250 else None,
       "engaged": bool(sm["carState"].cruiseState.enabled),

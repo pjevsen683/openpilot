@@ -337,7 +337,12 @@ let roadGroup = null;
 // the world flows past at our own speed so markings do not jump 10 m at a time.
 const flow = new THREE.Group();
 scene.add(flow);
-let flowSpeed = 0, flowFrom = performance.now();
+// Everything in `flow` is drawn as the car saw it at some moment and moved back
+// by our speed since then. Times are the device's (wall clock, ms); `clockOff`
+// turns them into ours: the smallest arrival-minus-device time seen, i.e. the
+// clock difference plus the quickest fetch, let creep up slowly in case the
+// device clock is set.
+let flowSpeed = 0, flowFrom = Date.now(), clockOff = null;
 
 function dispose(o) {
   o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && !Object.values(M).includes(c.material)) c.material.dispose(); });
@@ -389,7 +394,7 @@ function nearbyMeshes(near, fix, heading) {
   return out;
 }
 
-function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix) {
+function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behind = 0) {
   if (roadGroup) { flow.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
   if (!mm || !mm.path || !mm.path.pts || mm.path.pts.length < 2) return;
   const pts = mm.path.pts, turns = mm.path.turns || [];
@@ -415,7 +420,8 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix) {
   const p0 = tr.at(0);
   const laneCentre = leftEdge(0) + (idx + 0.5) * LANE_W;
   const cx = p0.x + -p0.fy * laneCentre, cy = p0.y + p0.fx * laneCentre;
-  grp.position.copy(P(-cx, -cy).add(new THREE.Vector3(0, 0, 0)));
+  // the map was matched on an older fix than the snapshot: we have moved on since
+  grp.position.copy(P(-cx - behind, -cy));
   grp.position.y = 0;
 
   const s0 = Math.max(tr.s0, -40), s1 = tr.s1;
@@ -737,9 +743,16 @@ async function tick() {
     if (!d.ready) return;
     last = d;
     hud(d);
+    const off = Date.now() - d.t * 1000;
+    clockOff = clockOff === null ? off : Math.min(off, clockOff + 2);
+    flowSpeed = Math.max(0, (d.v_ego_kph || 0) / 3.6);
+    // Without these the road snapped back up to 12 m at 110 km/h, a couple of
+    // times a second: the map is matched at 2 Hz, polled at 2.5 Hz, and was
+    // drawn as if matched the moment it arrived.
+    const mapAge = d.map && d.map.fix_t ? Math.min(2, Math.max(0, d.t - d.map.fix_t)) : 0;
     const mdl = buildModel(d.scene || {});
-    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading, d.map && d.map.lane, nearby, d.map);
-    flowSpeed = Math.max(0, (d.v_ego_kph || 0) / 3.6); flowFrom = performance.now(); flow.position.z = 0;
+    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading, d.map && d.map.lane, nearby, d.map, flowSpeed * mapAge);
+    flowFrom = d.t * 1000 + clockOff; flow.position.z = 0;
     updateOthers(d);
     window.__frames = (window.__frames || 0) + 1;
   } catch (e) { /* off wifi; keep the last frame */ }
@@ -757,7 +770,7 @@ setInterval(tickNearby, 1000); tickNearby();
 
 function frame() {
   // at most 1 s of dead reckoning, in case data stops
-  flow.position.z = flowSpeed * Math.min(1, (performance.now() - flowFrom) / 1000);
+  flow.position.z = flowSpeed * Math.min(1.5, Math.max(0, (Date.now() - flowFrom) / 1000));
   for (const o of others.values()) if (o.target) o.obj.position.lerp(o.target, 0.2);
   renderer.render(scene, camera);
   if (DEBUG) document.title = JSON.stringify({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
