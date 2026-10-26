@@ -128,6 +128,9 @@ def _collect() -> None:
       "ready": True,
       "t": round(time.time(), 3),
       "v_ego_kph": round(v_ego * CV.MS_TO_KPH, 1),
+      # rad/s, + = turning right on this car (checked against the GPS bearing);
+      # the 3D page turns the road with us between map frames
+      "yaw_rate": round(float(sm["carState"].yawRate), 4),
       "v_cruise_kph": round(v_cruise_kph, 1) if 0 < v_cruise_kph < 250 else None,
       "engaged": bool(sm["carState"].cruiseState.enabled),
       "radar_age_s": round(radar_age, 1) if radar_age is not None else None,
