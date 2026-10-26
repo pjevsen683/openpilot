@@ -22,6 +22,8 @@ import array
 import math
 import sqlite3
 
+from openpilot.tavascan_map.lane_layout import edges
+
 EARTH_R = 6371000.0
 SEARCH_M = 40.0
 MAX_ANGLE = 60.0        # deg, a segment further off our heading is not ours
@@ -37,6 +39,8 @@ VIEW_SIDE_M = 150.0
 VIEW_STEP_M = 3.0      # points of a nearby road closer together than this are dropped
 BEHIND_M = 40.0
 PATH_STEP_M = 5.0
+TURN_MIN_DEG = 5.0     # a way off to that side counts as the turn our lane makes (a fork may part by 15 degrees) ...
+TURN_MAX_DEG = 135.0   # ... up to this sharp
 POINT_ON_PATH_M = 12.0
 
 
@@ -142,7 +146,10 @@ class Map:
         best = (dist, i, f, math.degrees(math.atan2(dx, dy)) % 360.0)
     return best
 
-  def match(self, lat: float, lon: float, heading: float, speed: float) -> dict | None:
+  def match(self, lat: float, lon: float, heading: float, speed: float, turn: str | None = None) -> dict | None:
+    """turn: "left" or "right" when the lane we are in only turns that way; the
+    path ahead then takes that turn at the end of this way."""
+    self._turn = turn
     if speed >= MIN_HEADING_SPEED or self._heading is None:
       self._heading = heading
     if speed < MIN_HEADING_SPEED and self.cur is not None:
@@ -186,14 +193,16 @@ class Map:
   def _car_frame(self, lat, lon, path) -> dict:
     """The road as [x ahead, y right] in metres from the GPS fix, every PATH_STEP_M or so,
     with our direction's lane count, an index into `turns` (or -1) and the distance
-    along the road from us (negative behind) per point."""
+    along the road from us (negative behind) per point, then where our lanes lie across
+    it (lane_layout.edges: asphalt left and right, and lane 0's left side)."""
     b = math.radians(self._heading or 0.0)
     cb, sb = math.cos(b), math.sin(b)
     kx = 111320.0 * math.cos(math.radians(lat))
     turns: list[str] = []
     pts = []
     last_s = None
-    for la, lo, s, lanes, turn in path:
+    lay = edges([{"s": p[2], "lanes": p[3], "turns": p[4], "oneway": p[5], "total": p[6], "via": p[7]} for p in path])
+    for (la, lo, s, lanes, turn, _, _, _), (left, right, base) in zip(path, lay):
       if last_s is not None and s - last_s < PATH_STEP_M and s > 0:
         continue
       last_s = s
@@ -201,7 +210,7 @@ class Map:
       if turn and turn not in turns:
         turns.append(turn)
       pts.append([round(dn * cb + de * sb, 1), round(-dn * sb + de * cb, 1), lanes or 0,
-                  turns.index(turn) if turn else -1, round(s)])
+                  turns.index(turn) if turn else -1, round(s), round(left, 2), round(right, 2), round(base, 2)])
     return {"pts": pts, "turns": turns}
 
   def _behind(self, seg: int, f: float) -> list:
@@ -216,11 +225,11 @@ class Map:
     while 0 <= idx < len(w.lat) and s < BEHIND_M:
       p = (w.lat[idx], w.lon[idx])
       s += self._dist(prev, p)
-      out.append((p[0], p[1], -s, info["lanes"], info["turn_lanes"]))
+      out.append((p[0], p[1], -s, info["lanes"], info["turn_lanes"], bool(w.oneway), w.lanes, None))
       prev = p
       idx -= d
     out.reverse()
-    return out + [(lat0, lon0, 0.0, info["lanes"], info["turn_lanes"])]
+    return out + [(lat0, lon0, 0.0, info["lanes"], info["turn_lanes"], bool(w.oneway), w.lanes, None)]
 
   # --- looking ahead -----------------------------------------------------------
   def nearby(self, lat: float, lon: float, heading: float) -> dict:
@@ -276,6 +285,7 @@ class Map:
     s = 0.0
     prev = (lat0, lon0)
     seen = {w.id}
+    via = None          # how we came onto this way: "left"/"right"/"through", for lane_layout
     last_info = w.directed(d) | {"class": w.hw}
     while s < AHEAD_M:
       while 0 <= idx < len(w.lat) and s < AHEAD_M:
@@ -286,20 +296,23 @@ class Map:
         n = max(1, int(step // PATH_STEP_M))
         for j in range(1, n + 1):
           q = (prev[0] + (p[0] - prev[0]) * j / n, prev[1] + (p[1] - prev[1]) * j / n)
-          path.append((q[0], q[1], s + step * j / n, last_info["lanes"], last_info["turn_lanes"]))
+          path.append((q[0], q[1], s + step * j / n, last_info["lanes"], last_info["turn_lanes"],
+                       bool(w.oneway), w.lanes, via))
         s += step
         prev = p
         idx += d
       if s >= AHEAD_M:
         break
       end_node = w.nodes[-1] if d > 0 else w.nodes[0]
-      nxt = self._continue(w, d, end_node, seen)
+      # our lane's turn decides the first junction; past it, the least bend
+      first = len(seen) == 1
+      nxt = self._continue(w, d, end_node, seen, getattr(self, "_turn", None) if first else None)
       if nxt is None:
         # Inside a roundabout the exit we take is not knowable from the map.
         if w.junction not in ("roundabout", "circular"):
           events.append({"at_m": round(s), "kind": "end_of_mapped_road"})
         break
-      w, d, start = nxt
+      w, d, start, via = nxt
       seen.add(w.id)
       if w.junction in ("roundabout", "circular"):
         events.append({"at_m": round(s), "kind": "roundabout"})
@@ -316,8 +329,12 @@ class Map:
     events.sort(key=lambda e: e["at_m"])
     return {"horizon_m": round(s), "events": events[:20], "_path": path}
 
-  def _continue(self, w: Way, d: int, node: int, seen: set):
-    """Where the road goes on from node, the end of w: (way, direction, index of node in it).
+  def _continue(self, w: Way, d: int, node: int, seen: set, turn: str | None = None):
+    """Where the road goes on from node, the end of w: (way, direction, index of node in it,
+    "left"/"right"/"through" for how it leaves).
+
+    With turn set, the sharpest way off to that side within TURN_MAX_DEG is taken
+    (a turn lane leads there), when there is one.
 
     A roundabout the road runs into is returned whatever the angle, so the
     caller can report it. Otherwise the joining way that bends least, driven
@@ -326,7 +343,7 @@ class Map:
     """
     end_brg = _bearing(w.lat[-2], w.lon[-2], w.lat[-1], w.lon[-1]) if d > 0 else \
               _bearing(w.lat[1], w.lon[1], w.lat[0], w.lon[0])
-    best = None
+    best = turned = None
     for (wid,) in self.db.execute("SELECT way FROM junction WHERE node=?", (node,)).fetchall():
       if wid in seen:
         continue
@@ -338,7 +355,7 @@ class Map:
       except ValueError:
         continue
       if o.junction in ("roundabout", "circular"):
-        return o, 1, k
+        return o, 1, k, "through"
       options = []
       if k < len(o.nodes) - 1 and o.oneway != -1:
         options.append((1, _bearing(o.lat[k], o.lon[k], o.lat[k + 1], o.lon[k + 1])))
@@ -346,9 +363,15 @@ class Map:
         options.append((-1, _bearing(o.lat[k], o.lon[k], o.lat[k - 1], o.lon[k - 1])))
       for nd, brg in options:
         a = _angle(end_brg, brg)
+        bend = (brg - end_brg + 180.0) % 360.0 - 180.0      # + = to the right
         if a < 70 and (best is None or a < best[0]):
           best = (a, o, nd, k)
-    return None if best is None else best[1:]
+        side = 1 if turn == "right" else -1 if turn == "left" else 0
+        if side and TURN_MIN_DEG <= side * bend <= TURN_MAX_DEG and (turned is None or side * bend > turned[0]):
+          turned = (side * bend, o, nd, k)
+    if turned is not None:
+      return turned[1], turned[2], turned[3], turn
+    return None if best is None else (*best[1:], "through")
 
   def _points_on(self, path) -> list:
     if len(path) < 2:

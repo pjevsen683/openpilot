@@ -24,7 +24,7 @@ from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
-from openpilot.tavascan_map.lane_runner import LaneRunner
+from openpilot.tavascan_map.lane_runner import LaneRunner, lane_turn
 from openpilot.tavascan_map.matcher import Map
 from openpilot.tavascan_web import geometry
 
@@ -95,7 +95,7 @@ def main() -> None:
     if m is not None and sm.updated[gps_service] and g.hasFix and now - last_match >= MATCH_PERIOD_S:
       last_match = last_fix = now
       try:
-        st = m.match(g.latitude, g.longitude, g.bearingDeg, g.speed)
+        st = m.match(g.latitude, g.longitude, g.bearingDeg, g.speed, turn=lane_turn(out.get("match"), out.get("lane")))
       except Exception:
         cloudlog.exception("tavascan_map: match failed")
         st = None
