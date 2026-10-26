@@ -1,6 +1,6 @@
 """Feeds the lane filter once per tick: map layout, lane changes, observations."""
 from openpilot.tavascan_map.lane_inputs import LaneChangeWatch, observation
-from openpilot.tavascan_map.lanes import LaneFilter
+from openpilot.tavascan_map.lanes import LaneFilter, turn_only
 
 MODEL_LANE_PROB = 0.3
 MODEL_L_HOLD_S = 2.0   # the model's lane count must hold this long before it is used
@@ -10,6 +10,7 @@ TURN_WINDOW_S = 6.0   # ... compared with our heading this long ago
 # Back on the way we left within this long: the match strayed (GPS drift onto a
 # ramp beside us) and the lane we had there still holds.
 DETOUR_S = 15.0
+LANE_TURN_CONFIDENCE = 0.6   # this sure of a turn-only lane, the map's path ahead takes its turn
 
 
 def _side_hint(old_road, new_road, old_L, new_L) -> int:
@@ -21,6 +22,17 @@ def _side_hint(old_road, new_road, old_L, new_L) -> int:
   if new_L > old_L and old_road and new_road and new_road[0] in MOTORWAY and old_road[1:] != new_road[1:]:
     return -1
   return 0
+
+
+def lane_turn(match: dict | None, lane: dict | None) -> str | None:
+  """"left"/"right" when the lane we are most likely in only turns that way."""
+  if not match or not lane or lane.get("confidence", 0) < LANE_TURN_CONFIDENCE:
+    return None
+  L = match.get("lanes") or 0
+  if lane.get("of") != L:
+    return None
+  k = turn_only(match.get("turn_lanes"), L)[lane["best"]]
+  return "left" if k < 0 else "right" if k > 0 else None
 
 
 class LaneRunner:

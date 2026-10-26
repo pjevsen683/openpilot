@@ -140,3 +140,13 @@ def test_what_the_model_sees_mid_change_is_not_counted_on_top_of_the_change():
   for _ in range(5):
     out = r.step(t, 33.0, 0.1, mw, dict(middle, lane_ys=sweep(3.4, n=30)[-1]), CAR, []); t += 0.1
   assert out["best"] == 1 and out["p"][2] < 0.3
+
+
+def test_lane_turn_names_the_turn_of_a_turn_only_lane():
+  from openpilot.tavascan_map.lane_runner import lane_turn
+  m = {"lanes": 2, "turn_lanes": "left|right"}
+  assert lane_turn(m, {"best": 1, "of": 2, "confidence": 0.93}) == "right"
+  assert lane_turn(m, {"best": 0, "of": 2, "confidence": 0.93}) == "left"
+  assert lane_turn(m, {"best": 1, "of": 2, "confidence": 0.5}) is None          # not sure enough
+  assert lane_turn({"lanes": 2, "turn_lanes": "left|through"}, {"best": 1, "of": 2, "confidence": 0.9}) is None
+  assert lane_turn(m, {"best": 1, "of": 3, "confidence": 0.9}) is None          # counts disagree

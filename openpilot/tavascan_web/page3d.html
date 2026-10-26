@@ -248,7 +248,12 @@ function track(pts) {
     const a = pts[i - 1], b = pts[i];
     const f = b[4] === a[4] ? 0 : Math.min(1, Math.max(0, (s - a[4]) / (b[4] - a[4])));
     const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy) || 1;
-    return { x: a[0] + f * dx, y: a[1] + f * dy, fx: dx / L, fy: dy / L, lanes: f < 0.5 ? a[2] : b[2] };
+    const lay = a.length >= 8 && b.length >= 8;
+    return { x: a[0] + f * dx, y: a[1] + f * dy, fx: dx / L, fy: dy / L, lanes: f < 0.5 ? a[2] : b[2],
+             // where our lanes lie across the road (tavascan_map lane_layout): the
+             // asphalt edges taper, lane 0's side steps with the lanes
+             left: lay ? a[5] + f * (b[5] - a[5]) : null, right: lay ? a[6] + f * (b[6] - a[6]) : null,
+             base: lay ? (f < 0.5 ? a[7] : b[7]) : null };
   };
   return { at, s0: pts[0][4], s1: pts[n - 1][4] };
 }
@@ -423,8 +428,13 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behi
   const oppLanes = twoWay ? Math.max(1, (mm.lanes_total || 2 * L0) - L0) : 0;
   // On a two-way road OSM draws the centre line; our lanes are to its right.
   // On a one-way road it is the middle of the carriageway.
-  const leftEdge = s => twoWay ? 0 : -ourLanes(s) * LANE_W / 2;
+  // Lanes are laid out from the map's layout, which carries them across lane
+  // count changes so through lanes join up; older map data has none.
+  const lay = tr.at(0).base !== null;
+  const leftEdge = s => lay ? tr.at(s).base : (twoWay ? 0 : -ourLanes(s) * LANE_W / 2);
   const rightEdge = s => leftEdge(s) + ourLanes(s) * LANE_W;
+  const asphaltL = s => lay ? tr.at(s).left : leftEdge(s);
+  const asphaltR = s => lay ? tr.at(s).right : rightEdge(s);
 
   // Which lane are we in: the model says rightmost or leftmost; otherwise the
   // middle one. Shift the whole road so that lane is under us.
@@ -434,6 +444,8 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behi
   const idx = lane ? lane.best : Math.floor((L0 - 1) / 2);
   const p0 = tr.at(0);
   const laneCentre = leftEdge(0) + (idx + 0.5) * LANE_W;
+  // our lane further on: the one that lies where ours does now, as lanes come and go
+  const laneAt = s => Math.min(ourLanes(s) - 1, Math.max(0, Math.floor((laneCentre - leftEdge(s)) / LANE_W)));
   const cx = p0.x + -p0.fy * laneCentre, cy = p0.y + p0.fx * laneCentre;
   // the map was matched on an older fix than the snapshot: we have moved on since
   grp.position.copy(P(-cx - behind, -cy));
@@ -441,23 +453,23 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behi
 
   const s0 = Math.max(tr.s0, -40), s1 = tr.s1;
   for (const m of nearbyMeshes(near, fix, mm.heading)) grp.add(m);
-  const ours = band(tr, s0, s1, leftEdge, rightEdge, M.asphalt, 0.0);
+  const ours = band(tr, s0, s1, asphaltL, asphaltR, M.asphalt, 0.0);
   if (ours) grp.add(ours);
   // our own lane, faintly, as far as we can trust which lane it is
   M.ourLane.opacity = 0.05 + 0.15 * (lane ? lane.confidence : 0);
-  const mine = band(tr, Math.max(s0, -8), Math.min(s1, 60), s => leftEdge(s) + idx * LANE_W + 0.25,
-                    s => leftEdge(s) + (idx + 1) * LANE_W - 0.25, M.ourLane, 0.012);
+  const mine = band(tr, Math.max(s0, -8), Math.min(s1, 60), s => leftEdge(s) + laneAt(s) * LANE_W + 0.25,
+                    s => leftEdge(s) + (laneAt(s) + 1) * LANE_W - 0.25, M.ourLane, 0.012);
   if (mine) grp.add(mine);
   if (twoWay) {
-    const opp = band(tr, s0, s1, s => -oppLanes * LANE_W, () => 0, M.asphaltOpp, 0.0);
+    const opp = band(tr, s0, s1, s => asphaltL(s) - oppLanes * LANE_W, asphaltL, M.asphaltOpp, 0.0);
     if (opp) grp.add(opp);
   }
 
   // Markings. Close in, the model's own lines are drawn instead (they are
   // where the paint really is); the map's take over beyond them.
   const mk = showModel ? Math.max(s0, modelReach) : s0;
-  const edgeL = band(tr, mk, s1, s => leftEdge(s) - 0.07, s => leftEdge(s) + 0.07, twoWay ? M.paintDim : M.paint, 0.02);
-  const edgeR = band(tr, mk, s1, s => rightEdge(s) - 0.07, s => rightEdge(s) + 0.07, M.paint, 0.02);
+  const edgeL = band(tr, mk, s1, s => asphaltL(s) - 0.07, s => asphaltL(s) + 0.07, twoWay ? M.paintDim : M.paint, 0.02);
+  const edgeR = band(tr, mk, s1, s => asphaltR(s) - 0.07, s => asphaltR(s) + 0.07, M.paint, 0.02);
   if (edgeL && !twoWay) grp.add(edgeL);
   if (edgeR) grp.add(edgeR);
   if (twoWay) grp.add(dashes(tr, mk, s1, () => 0, M.paint, 3, 9));
@@ -494,7 +506,7 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behi
 
   // Things on the road ahead.
   const ev = (mm.ahead && mm.ahead.events) || [];
-  const signOff = s => rightEdge(s) + 0.9;
+  const signOff = s => asphaltR(s) + 0.9;
   for (const e of ev) {
     const s = e.at_m;
     if (s < 1 || s > s1) continue;
@@ -524,7 +536,7 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behi
       grp.add(signPost(signTex("roundabout"), tr, Math.max(2, s - 25), signOff(s)));
     } else if (e.kind === "traffic_calming") {
       // a bump spans the whole road, both directions
-      const b = band(tr, s - 1.2, s + 1.2, s => twoWay ? -oppLanes * LANE_W : leftEdge(s), rightEdge, M.bump, 0.03, 1.2);
+      const b = band(tr, s - 1.2, s + 1.2, s => twoWay ? asphaltL(s) - oppLanes * LANE_W : asphaltL(s), asphaltR, M.bump, 0.03, 1.2);
       if (b) grp.add(b);
     } else if (e.kind === "motorway_junction") {
       let t = {}; try { t = JSON.parse(e.tags || "{}"); } catch (err) {}
@@ -554,7 +566,7 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behi
   aged.position.set(behind * Math.sin(turned / 2), 0, behind * Math.cos(turned / 2));
   // our lane's centre ahead, to tell how far the next frame moves the road
   aged.userData.ref = [10, 20, 30, 40, 50, 60].filter(s => s < s1).map(s => {
-    const q = tr.at(s), c = leftEdge(s) + (idx + 0.5) * LANE_W;
+    const q = tr.at(s), c = leftEdge(s) + (laneAt(s) + 0.5) * LANE_W;
     return P(q.x - q.fy * c, q.y + q.fx * c);
   });
   aged.userData.inner = grp;
