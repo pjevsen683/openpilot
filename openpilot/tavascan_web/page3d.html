@@ -342,7 +342,22 @@ scene.add(flow);
 // turns them into ours: the smallest arrival-minus-device time seen, i.e. the
 // clock difference plus the quickest fetch, let creep up slowly in case the
 // device clock is set.
-let flowSpeed = 0, flowFrom = Date.now(), clockOff = null;
+let flowSpeed = 0, flowYaw = 0, flowFrom = Date.now(), clockOff = null;
+// Moved on and turned with the car: yaw_rate is + turning right.
+function setFlow() {
+  const age = Math.min(1.5, Math.max(0, (Date.now() - flowFrom) / 1000));
+  const d = flowSpeed * age, a = flowYaw * age;
+  flow.rotation.y = a;
+  flow.position.set(d * Math.sin(a / 2), 0, d * Math.cos(a / 2));
+}
+// A new map frame puts the road a little elsewhere (GPS heading and position,
+// the lane we are in). `corr` holds the old road where it was and lets go of
+// it over CORR_S, so the road glides to where the new frame says instead of
+// jumping there.
+const CORR_S = 1.5, CORR_MAX_M = 8, CORR_MAX_RAD = 0.3;
+const corr = new THREE.Group();
+flow.add(corr);
+const corrState = { x: 0, rot: 0 };
 
 function dispose(o) {
   o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && !Object.values(M).includes(c.material)) c.material.dispose(); });
@@ -394,8 +409,8 @@ function nearbyMeshes(near, fix, heading) {
   return out;
 }
 
-function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behind = 0) {
-  if (roadGroup) { flow.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
+function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behind = 0, turned = 0) {
+  if (roadGroup) { corr.remove(roadGroup); dispose(roadGroup); roadGroup = null; }
   if (!mm || !mm.path || !mm.path.pts || mm.path.pts.length < 2) return;
   const pts = mm.path.pts, turns = mm.path.turns || [];
   const tr = track(pts);
@@ -532,8 +547,44 @@ function buildRoad(mm, lanePos, modelReach, modelHeading, dLane, near, fix, behi
     delta = Math.atan2(Math.sin(delta), Math.cos(delta));
     if (Math.abs(delta) < 8 * Math.PI / 180) outer.rotation.y = -delta;
   }
-  roadGroup = outer;
-  flow.add(outer);
+  // the map frame's fix is older than the snapshot: move and turn on since then
+  const aged = new THREE.Group();
+  aged.add(outer);
+  aged.rotation.y = turned;
+  aged.position.set(behind * Math.sin(turned / 2), 0, behind * Math.cos(turned / 2));
+  // our lane's centre ahead, to tell how far the next frame moves the road
+  aged.userData.ref = [10, 20, 30, 40, 50, 60].filter(s => s < s1).map(s => {
+    const q = tr.at(s), c = leftEdge(s) + (idx + 0.5) * LANE_W;
+    return P(q.x - q.fy * c, q.y + q.fx * c);
+  });
+  aged.userData.inner = grp;
+  roadGroup = aged;
+  corr.add(aged);
+}
+
+// Where our lane's centre line ahead is drawn now, in the car's frame: [x right, ahead] pairs.
+function roadRef() {
+  if (!roadGroup || !roadGroup.userData.ref) return null;
+  scene.updateMatrixWorld(true);
+  const inner = roadGroup.userData.inner;
+  return roadGroup.userData.ref.map(v => { const w = inner.localToWorld(v.clone()); return [w.x, -w.z]; });
+}
+
+// Lateral offset and turn (about the car) that put the new road's line onto the old one.
+function fitShift(oldRef, newRef) {
+  const lat = x => { for (let i = 1; i < oldRef.length; i++) {
+    const a = oldRef[i - 1], b = oldRef[i];
+    if (a[1] <= x && x <= b[1] && b[1] > a[1]) return a[0] + (b[0] - a[0]) * (x - a[1]) / (b[1] - a[1]);
+  } return null; };
+  const pts = newRef.map(([x, f]) => { const o = lat(f); return o === null ? null : [f, o - x]; }).filter(Boolean);
+  if (pts.length < 2) return null;
+  // least squares d = a + b * ahead
+  const n = pts.length, sf = pts.reduce((t, p) => t + p[0], 0), sd = pts.reduce((t, p) => t + p[1], 0);
+  const sff = pts.reduce((t, p) => t + p[0] * p[0], 0), sfd = pts.reduce((t, p) => t + p[0] * p[1], 0);
+  const den = n * sff - sf * sf;
+  if (Math.abs(den) < 1e-6) return null;
+  const b = (n * sfd - sf * sd) / den, a = (sd - b * sf) / n;
+  return { x: a, rot: -Math.atan(b) };
 }
 
 // ---- the model's lane lines, close in -------------------------------------------
@@ -750,9 +801,21 @@ async function tick() {
     // times a second: the map is matched at 2 Hz, polled at 2.5 Hz, and was
     // drawn as if matched the moment it arrived.
     const mapAge = d.map && d.map.fix_t ? Math.min(2, Math.max(0, d.t - d.map.fix_t)) : 0;
+    const yaw = d.yaw_rate || 0;
+    const oldRef = roadRef();
+    flowYaw = yaw; flowFrom = d.t * 1000 + clockOff;
+    // the correction so far, carried into the new snapshot's frame: it is
+    // kept relative to the car, as the road it holds is
     const mdl = buildModel(d.scene || {});
-    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading, d.map && d.map.lane, nearby, d.map, flowSpeed * mapAge);
-    flowFrom = d.t * 1000 + clockOff; flow.position.z = 0;
+    buildRoad(d.map && d.map.match, d.lanes, mdl.reach, mdl.heading, d.map && d.map.lane, nearby, d.map,
+              flowSpeed * mapAge, yaw * mapAge);
+    setFlow();
+    corr.position.set(0, 0, 0); corr.rotation.y = 0;
+    const newRef = roadRef();
+    const sh = oldRef && newRef ? fitShift(oldRef, newRef) : null;
+    if (sh && Math.abs(sh.x) < CORR_MAX_M && Math.abs(sh.rot) < CORR_MAX_RAD) { corrState.x = sh.x; corrState.rot = sh.rot; }
+    else { corrState.x = 0; corrState.rot = 0; }   // a different road altogether: show it as it is
+    applyCorr();
     updateOthers(d);
     window.__frames = (window.__frames || 0) + 1;
   } catch (e) { /* off wifi; keep the last frame */ }
@@ -768,9 +831,13 @@ async function tickNearby() {
 }
 setInterval(tickNearby, 1000); tickNearby();
 
+let lastFrame = performance.now();
+function applyCorr() { corr.rotation.y = corrState.rot; corr.position.x = corrState.x; }
 function frame() {
   // at most 1 s of dead reckoning, in case data stops
-  flow.position.z = flowSpeed * Math.min(1.5, Math.max(0, (Date.now() - flowFrom) / 1000));
+  setFlow();
+  const now = performance.now(), k = Math.exp(-(now - lastFrame) / 1000 / CORR_S);
+  lastFrame = now; corrState.x *= k; corrState.rot *= k; applyCorr();
   for (const o of others.values()) if (o.target) o.obj.position.lerp(o.target, 0.2);
   renderer.render(scene, camera);
   if (DEBUG) document.title = JSON.stringify({ calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
